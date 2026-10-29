@@ -82,19 +82,13 @@ func serve(svc service.Service, args []string) error {
 	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 		return errors.New("the gateway only listens on a loopback address")
 	}
-	server := &http.Server{Addr: *addr, Handler: g, ReadHeaderTimeout: 10 * time.Second}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	go func() {
-		<-ctx.Done()
-		drain, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		server.Shutdown(drain)
-	}()
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
 		return err
 	}
-	return nil
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return gateway.Serve(ctx, &http.Server{Handler: g, ReadHeaderTimeout: 10 * time.Second}, ln, 10*time.Minute)
 }
 
 func runAudit(svc service.Service, args []string) int {

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -97,38 +98,47 @@ WantedBy=default.target
 `
 }
 
-func copyExecutable(dst string) error {
+func sameFile(a, b string) bool {
+	x, err := os.ReadFile(a)
+	if err != nil {
+		return false
+	}
+	y, err := os.ReadFile(b)
+	return err == nil && bytes.Equal(x, y)
+}
+
+func copyExecutable(dst string) (bool, error) {
 	src, err := os.Executable()
 	if err != nil {
-		return err
+		return false, err
 	}
 	if real, err := filepath.EvalSymlinks(src); err == nil {
 		src = real
 	}
-	if src == dst {
-		return nil
+	if src == dst || sameFile(src, dst) {
+		return false, nil
 	}
 	in, err := os.Open(src)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer in.Close()
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
-		return err
+		return false, err
 	}
 	tmp := dst + ".new"
 	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
-		return err
+		return false, err
 	}
 	if err := out.Close(); err != nil {
-		return err
+		return false, err
 	}
-	return os.Rename(tmp, dst)
+	return true, os.Rename(tmp, dst)
 }
 
 func Healthy(url string) bool {
@@ -142,7 +152,7 @@ func Healthy(url string) bool {
 }
 
 func waitHealthy(url string) bool {
-	for range 50 {
+	for range 300 {
 		if Healthy(url) {
 			return true
 		}
@@ -152,7 +162,8 @@ func waitHealthy(url string) bool {
 }
 
 func (s Service) Install() error {
-	if err := copyExecutable(s.Binary()); err != nil {
+	changed, err := copyExecutable(s.Binary())
+	if err != nil {
 		return fmt.Errorf("copy binary: %w", err)
 	}
 	switch s.OS {
@@ -164,8 +175,10 @@ func (s Service) Install() error {
 			return err
 		}
 		if _, err := s.Run("launchctl", "print", s.launchdTarget()); err == nil {
-			if out, err := s.Run("launchctl", "kickstart", "-k", s.launchdTarget()); err != nil {
-				return fmt.Errorf("launchctl kickstart: %s", out)
+			if changed {
+				if out, err := s.Run("launchctl", "kill", "SIGTERM", s.launchdTarget()); err != nil {
+					return fmt.Errorf("launchctl kill: %s", out)
+				}
 			}
 		} else if out, err := s.Run("launchctl", "bootstrap", s.domain(), s.plistPath()); err != nil {
 			return fmt.Errorf("launchctl bootstrap: %s", out)
@@ -177,7 +190,11 @@ func (s Service) Install() error {
 		if err := os.WriteFile(s.unitPath(), []byte(s.UnitFile()), 0o644); err != nil {
 			return err
 		}
-		for _, args := range [][]string{{"--user", "daemon-reload"}, {"--user", "enable", Unit}, {"--user", "restart", Unit}} {
+		start := []string{"--user", "start", Unit}
+		if changed {
+			start = []string{"--user", "restart", Unit}
+		}
+		for _, args := range [][]string{{"--user", "daemon-reload"}, {"--user", "enable", Unit}, start} {
 			if out, err := s.Run("systemctl", args...); err != nil {
 				return fmt.Errorf("systemctl %s: %s", strings.Join(args, " "), out)
 			}
