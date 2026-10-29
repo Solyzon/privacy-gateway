@@ -1,0 +1,30 @@
+* text=auto eol=lf
+
+*.css diff=css
+*.html diff=html
+*.md diff=markdown
+*.php diff=php
+
+*.sh text eol=lf
+*.bat text eol=crlf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.avif binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.mp3 binary
+*.mp4 binary
+*.pdf binary
+
+CHANGELOG.md export-ignore
+README.md export-ignore
+CLAUDE.md export-ignore
+AGENTS.md export-ignore
+docs/ export-ignore
+.github/ export-ignore
