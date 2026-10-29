@@ -24,18 +24,19 @@ type Conn struct {
 }
 
 type Env struct {
-	WantURL      string
-	SettingsURL  func() (string, error)
-	ProcessURL   string
-	Running      func() (bool, string)
-	Healthy      func() bool
-	Connections  func() ([]Conn, error)
-	AnthropicIPs func() ([]string, error)
-	OpenAIIPs    func() ([]string, error)
-	Codex        func() (used bool, provider string)
-	GatewayPID   string
-	StatusLog    string
-	Now          time.Time
+	WantURL       string
+	SettingsURL   func() (string, error)
+	ProcessURL    string
+	Running       func() (bool, string)
+	Healthy       func() bool
+	Connections   func() ([]Conn, error)
+	AnthropicIPs  func() ([]string, error)
+	OpenAIIPs     func() ([]string, error)
+	Codex         func() (used bool, provider string)
+	GatewayPID    string
+	StatusLog     string
+	Now           time.Time
+	ClaudeSession func(pid string) (id string, started time.Time, ok bool)
 }
 
 func Run(e Env) []Finding {
@@ -73,7 +74,8 @@ func Run(e Env) []Finding {
 	} else {
 		toAnthropic := set(anthropic)
 		toOpenAI := set(openai)
-		direct, browsers := map[string]bool{}, map[string]bool{}
+		seen := sessionsSeen(e.StatusLog)
+		direct, browsers, routed := map[string]bool{}, map[string]bool{}, map[string]bool{}
 		for _, c := range conns {
 			if c.PID == e.GatewayPID {
 				continue
@@ -88,6 +90,10 @@ func Run(e Env) []Finding {
 			}
 			label := c.Command
 			if version.MatchString(label) {
+				if id, started, ok := e.ClaudeSession(c.PID); ok && !seen[id].Before(started) {
+					routed[c.PID] = true
+					continue
+				}
 				label = "Claude Code " + label
 			}
 			direct[fmt.Sprintf("%s (pid %s)", label, c.PID)] = true
@@ -96,10 +102,16 @@ func Run(e Env) []Finding {
 		if len(browsers) > 0 {
 			outside = ", navigateur hors périmètre : " + strings.Join(sorted(browsers), ", ")
 		}
+		switch n := len(routed); {
+		case n == 1:
+			outside = ", 1 session de Claude Code passe par elle et garde une liaison directe hors messages (compte, télémétrie)" + outside
+		case n > 1:
+			outside = fmt.Sprintf(", %d sessions de Claude Code passent par elle et gardent une liaison directe hors messages (compte, télémétrie)%s", n, outside)
+		}
 		if len(direct) == 0 {
 			add("bypass", true, "aucun agent ne parle à Anthropic ou à OpenAI sans la passerelle%s", outside)
 		} else {
-			add("bypass", false, "en direct, sans la passerelle : %s ; une session ouverte avant l'installation se relance%s", strings.Join(sorted(direct), ", "), outside)
+			add("bypass", false, "en direct, sans la passerelle : %s ; une session ouverte avant l'installation se relance, une session neuve passe en règle à son premier message%s", strings.Join(sorted(direct), ", "), outside)
 		}
 	}
 
@@ -128,6 +140,29 @@ func sorted(m map[string]bool) []string {
 		out = append(out, k)
 	}
 	sort.Strings(out)
+	return out
+}
+
+func sessionsSeen(path string) map[string]time.Time {
+	out := map[string]time.Time{}
+	f, err := os.Open(path)
+	if err != nil {
+		return out
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var e struct {
+			Time    string `json:"time"`
+			Session string `json:"session"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &e) != nil || e.Session == "" {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, e.Time); err == nil && t.After(out[e.Session]) {
+			out[e.Session] = t
+		}
+	}
 	return out
 }
 

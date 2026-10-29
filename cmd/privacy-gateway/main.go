@@ -133,6 +133,9 @@ func runAudit(svc service.Service, args []string) int {
 		GatewayPID: strings.TrimSpace(pidOut),
 		StatusLog:  svc.StatusLog(),
 		Now:        time.Now(),
+		ClaudeSession: func(pid string) (string, time.Time, bool) {
+			return claudeSession(svc.UserHome, pid)
+		},
 	})
 	failed := 0
 	for _, f := range findings {
@@ -155,6 +158,21 @@ func runAudit(svc service.Service, args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func claudeSession(home, pid string) (string, time.Time, bool) {
+	if strings.Trim(pid, "0123456789") != "" {
+		return "", time.Time{}, false
+	}
+	raw, err := os.ReadFile(filepath.Join(home, ".claude", "sessions", pid+".json"))
+	var s struct {
+		SessionID string `json:"sessionId"`
+		StartedAt int64  `json:"startedAt"`
+	}
+	if err != nil || json.Unmarshal(raw, &s) != nil || s.SessionID == "" {
+		return "", time.Time{}, false
+	}
+	return s.SessionID, time.UnixMilli(s.StartedAt), true
 }
 
 func notice(svc service.Service, args []string) {

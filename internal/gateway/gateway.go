@@ -183,6 +183,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		t := time.Now()
 		session := sessionKey(r, raw)
+		entry.Session = session
 		tbl := g.masker.NewTable()
 		tbl.Import(g.tables.Load(session))
 		out, err := body.MaskWith(raw, tbl)
@@ -352,6 +353,7 @@ type logEntry struct {
 	Time     string         `json:"time"`
 	Method   string         `json:"method"`
 	Path     string         `json:"path"`
+	Session  string         `json:"session,omitempty"`
 	Status   int            `json:"status"`
 	Ms       int64          `json:"ms"`
 	MaskMs   float64        `json:"mask_ms"`

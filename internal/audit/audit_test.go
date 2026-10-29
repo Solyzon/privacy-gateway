@@ -28,6 +28,9 @@ func healthy(t *testing.T) Env {
 		GatewayPID:   "10",
 		StatusLog:    filepath.Join(t.TempDir(), "status.log"),
 		Now:          now,
+		ClaudeSession: func(string) (string, time.Time, bool) {
+			return "", time.Time{}, false
+		},
 	}
 }
 
@@ -116,6 +119,31 @@ func TestBypassLabelsAndScope(t *testing.T) {
 	}
 	for _, f := range Run(e) {
 		if f.Check == "bypass" && (f.OK || !strings.Contains(f.Detail, "Claude Code 2.1.312 (pid 85370)") || !strings.Contains(f.Detail, "codex (pid 60)")) {
+			t.Fatalf("got %+v", f)
+		}
+	}
+}
+
+func TestRoutedSessionKeepsItsDirectLink(t *testing.T) {
+	e := healthy(t)
+	e.Connections = func() ([]Conn, error) {
+		return []Conn{{PID: "85370", Command: "2.1.312", Remote: "160.79.104.10"}, {PID: "71360", Command: "2.1.312", Remote: "160.79.104.10"}}, nil
+	}
+	sessions := map[string]struct {
+		id      string
+		started time.Time
+	}{"85370": {"routed", now.Add(-2 * time.Hour)}, "71360": {"stale", now.Add(-time.Hour)}}
+	e.ClaudeSession = func(pid string) (string, time.Time, bool) {
+		s, ok := sessions[pid]
+		return s.id, s.started, ok
+	}
+	log := []string{
+		fmt.Sprintf(`{"time":%q,"path":"/v1/messages","status":200,"session":"routed"}`, now.Add(-30*time.Minute).Format(time.RFC3339)),
+		fmt.Sprintf(`{"time":%q,"path":"/v1/messages","status":200,"session":"stale"}`, now.Add(-3*time.Hour).Format(time.RFC3339)),
+	}
+	os.WriteFile(e.StatusLog, []byte(strings.Join(log, "\n")), 0o600)
+	for _, f := range Run(e) {
+		if f.Check == "bypass" && (f.OK || strings.Contains(f.Detail, "pid 85370") || !strings.Contains(f.Detail, "pid 71360") || !strings.Contains(f.Detail, "1 session de Claude Code passe par elle")) {
 			t.Fatalf("got %+v", f)
 		}
 	}
