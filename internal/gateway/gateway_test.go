@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -254,5 +255,26 @@ func TestCompressedBodyIsRefused(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusUnsupportedMediaType || len(up.bodies) != 0 {
 		t.Fatalf("compressed body forwarded: %d", resp.StatusCode)
+	}
+}
+
+func TestClientCancelIsNotAnUpstreamError(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		<-r.Context().Done()
+	}))
+	defer slow.Close()
+	home := t.TempDir()
+	g, _ := New(Config{Upstream: slow.URL, Home: home, Version: "test"})
+	srv := httptest.NewServer(g)
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "POST", srv.URL+"/v1/messages", strings.NewReader(requestBody(false)))
+	http.DefaultClient.Do(req)
+	time.Sleep(200 * time.Millisecond)
+	log, _ := os.ReadFile(filepath.Join(home, "status.log"))
+	if !strings.Contains(string(log), `"status":499`) {
+		t.Fatalf("status.log: %s", log)
 	}
 }

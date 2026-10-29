@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -206,7 +207,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	req.Header.Set("Accept-Encoding", "identity")
 	resp, err := g.client.Do(req)
 	if err != nil {
+		if r.Context().Err() != nil {
+			entry.Status = statusClientClosed
+			return
+		}
 		entry.Status = http.StatusBadGateway
+		entry.Error = upstreamError(err)
 		apiError(w, entry.Status, "api_error", "upstream unreachable")
 		return
 	}
@@ -318,6 +324,23 @@ type logEntry struct {
 	Ms     int64          `json:"ms"`
 	MaskMs float64        `json:"mask_ms"`
 	Masked map[string]int `json:"masked,omitempty"`
+	Error  string         `json:"error,omitempty"`
+}
+
+const statusClientClosed = 499
+
+func upstreamError(err error) string {
+	var dns *net.DNSError
+	var netErr net.Error
+	switch {
+	case errors.As(err, &dns):
+		return "dns"
+	case errors.As(err, &netErr) && netErr.Timeout():
+		return "timeout"
+	case strings.Contains(err.Error(), "tls"):
+		return "tls"
+	}
+	return "connection"
 }
 
 type statusLog struct {
