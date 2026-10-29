@@ -1,0 +1,203 @@
+package gateway
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+const secret = "Tr0ub4dor&3-horse"
+
+type upstream struct {
+	mu      sync.Mutex
+	bodies  []string
+	headers []http.Header
+}
+
+var tokenRe = regexp.MustCompile(`SZ_SECRET_[0-9a-f]{12}`)
+
+func (u *upstream) handler(w http.ResponseWriter, r *http.Request) {
+	b, _ := io.ReadAll(r.Body)
+	u.mu.Lock()
+	u.bodies = append(u.bodies, string(b))
+	u.headers = append(u.headers, r.Header.Clone())
+	u.mu.Unlock()
+	token := tokenRe.FindString(string(b))
+	switch {
+	case r.URL.Path == "/v1/messages" && strings.Contains(string(b), `"stream":true`):
+		w.Header().Set("Content-Type", "text/event-stream")
+		f := w.(http.Flusher)
+		for _, part := range []string{"voici " + token[:4], token[4:10], token[10:] + " fin"} {
+			d, _ := json.Marshal(map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]string{"type": "text_delta", "text": part}})
+			io.WriteString(w, "event: content_block_delta\ndata: "+string(d)+"\n\n")
+			f.Flush()
+		}
+		io.WriteString(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+	case r.URL.Path == "/v1/messages":
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"content":[{"type":"text","text":"`+token+`"}]}`)
+	case r.URL.Path == "/v1/messages/count_tokens":
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"input_tokens":12}`)
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Write([]byte{0x1f, 0x8b, 0x00, 0x01})
+	}
+}
+
+func start(t *testing.T) (*httptest.Server, *upstream, string) {
+	up := &upstream{}
+	fake := httptest.NewServer(http.HandlerFunc(up.handler))
+	t.Cleanup(fake.Close)
+	home := t.TempDir()
+	g, err := New(Config{Upstream: fake.URL, Home: home, Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(g)
+	t.Cleanup(srv.Close)
+	return srv, up, home
+}
+
+func requestBody(stream bool) string {
+	s := "false"
+	if stream {
+		s = "true"
+	}
+	return `{"model":"m","stream":` + s + `,"metadata":{"user_id":"user_a_account_b_session_s1"},"messages":[{"role":"user","content":"DB_PASSWORD=` + secret + `\nGITLAB_TOKEN=glpat-EXAMPLE\ncamille@orange.fr"}]}`
+}
+
+func post(t *testing.T, url, path, payload string) (*http.Response, string) {
+	req, _ := http.NewRequest("POST", url+path, strings.NewReader(payload))
+	req.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
+	req.Header.Set("Authorization", "Bearer sk-ant-oat01-test")
+	req.Header.Set("Accept-Encoding", "gzip")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp, string(b)
+}
+
+func TestStreamIsMaskedAndUnmasked(t *testing.T) {
+	srv, up, _ := start(t)
+	resp, out := post(t, srv.URL, "/v1/messages?beta=true", requestBody(true))
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d: %s", resp.StatusCode, out)
+	}
+	if strings.Contains(up.bodies[0], secret) || strings.Contains(up.bodies[0], "glpat-") || strings.Contains(up.bodies[0], "camille@orange.fr") {
+		t.Fatalf("clear value sent upstream: %s", up.bodies[0])
+	}
+	var text strings.Builder
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "data: ") {
+			var d struct {
+				Delta struct{ Text string } `json:"delta"`
+			}
+			json.Unmarshal([]byte(line[6:]), &d)
+			text.WriteString(d.Delta.Text)
+		}
+	}
+	if text.String() != "voici "+secret+" fin" {
+		t.Fatalf("got %q", text.String())
+	}
+	h := up.headers[0]
+	if h.Get("anthropic-beta") != "interleaved-thinking-2025-05-14" || h.Get("Authorization") != "Bearer sk-ant-oat01-test" || h.Get("Accept-Encoding") != "identity" {
+		t.Fatalf("headers not relayed: %v", h)
+	}
+}
+
+func TestJSONResponseIsUnmasked(t *testing.T) {
+	srv, _, _ := start(t)
+	_, out := post(t, srv.URL, "/v1/messages", requestBody(false))
+	if out != `{"content":[{"type":"text","text":"`+secret+`"}]}` {
+		t.Fatalf("got %s", out)
+	}
+}
+
+func TestCountTokensIsMasked(t *testing.T) {
+	srv, up, _ := start(t)
+	post(t, srv.URL, "/v1/messages/count_tokens", requestBody(false))
+	if strings.Contains(up.bodies[0], secret) {
+		t.Fatal("count_tokens sent in clear")
+	}
+}
+
+func TestOtherRoutesPassThrough(t *testing.T) {
+	srv, up, _ := start(t)
+	resp, out := post(t, srv.URL, "/api/other", "DB_PASSWORD="+secret)
+	if up.bodies[0] != "DB_PASSWORD="+secret || out != string([]byte{0x1f, 0x8b, 0x00, 0x01}) || resp.Header.Get("Content-Encoding") != "gzip" {
+		t.Fatalf("passthrough changed: %q %q", up.bodies[0], out)
+	}
+}
+
+func TestInvalidBodyIsBlocked(t *testing.T) {
+	srv, up, _ := start(t)
+	resp, out := post(t, srv.URL, "/v1/messages", `{"messages":[DB_PASSWORD=`+secret)
+	if resp.StatusCode != 400 || len(up.bodies) != 0 || strings.Contains(out, secret) {
+		t.Fatalf("invalid body forwarded or echoed: %d %s", resp.StatusCode, out)
+	}
+}
+
+func TestUpstreamDownGives502(t *testing.T) {
+	g, _ := New(Config{Upstream: "http://127.0.0.1:1", Home: t.TempDir(), Version: "test"})
+	srv := httptest.NewServer(g)
+	defer srv.Close()
+	resp, out := post(t, srv.URL, "/v1/messages", requestBody(false))
+	if resp.StatusCode != 502 || strings.Contains(out, secret) {
+		t.Fatalf("got %d %s", resp.StatusCode, out)
+	}
+}
+
+func TestHealthz(t *testing.T) {
+	srv, _, _ := start(t)
+	resp, err := http.Get(srv.URL + "/healthz")
+	if err != nil || resp.StatusCode != 200 {
+		t.Fatalf("healthz: %v %v", resp, err)
+	}
+}
+
+func TestStatusLogHasNoValues(t *testing.T) {
+	srv, _, home := start(t)
+	post(t, srv.URL, "/v1/messages", requestBody(true))
+	log, err := os.ReadFile(filepath.Join(home, "status.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(log), secret) || strings.Contains(string(log), "camille") || !strings.Contains(string(log), `"status":200`) {
+		t.Fatalf("status.log: %s", log)
+	}
+}
+
+func TestSessionNotice(t *testing.T) {
+	srv, _, home := start(t)
+	post(t, srv.URL, "/v1/messages", requestBody(true))
+	path := filepath.Join(home, "sessions", "s1.json")
+	var n struct {
+		Time int64  `json:"time"`
+		Text string `json:"text"`
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(b, &n) != nil {
+		t.Fatalf("notice missing: %v %s", err, b)
+	}
+	if n.Text != "masqué : DB_PASSWORD, GITLAB_TOKEN, 1 e-mail" || time.Since(time.UnixMilli(n.Time)) > time.Minute || strings.Contains(string(b), secret) {
+		t.Fatalf("notice: %s", b)
+	}
+	os.Remove(path)
+	post(t, srv.URL, "/v1/messages", requestBody(true))
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("values already announced in this session were announced again")
+	}
+}
