@@ -23,15 +23,17 @@ const (
 var validSession = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 
 var labels = map[mask.Kind][2]string{
-	mask.Secret: {"secret", "secrets"},
-	mask.Email:  {"e-mail", "e-mails"},
-	mask.Phone:  {"téléphone", "téléphones"},
-	mask.IBAN:   {"IBAN", "IBAN"},
-	mask.NIR:    {"n° de sécurité sociale", "n° de sécurité sociale"},
-	mask.Card:   {"carte bancaire", "cartes bancaires"},
+	mask.Secret:  {"secret", "secrets"},
+	mask.Email:   {"e-mail", "e-mails"},
+	mask.Phone:   {"téléphone", "téléphones"},
+	mask.IBAN:    {"IBAN", "IBAN"},
+	mask.NIR:     {"n° de sécurité sociale", "n° de sécurité sociale"},
+	mask.Card:    {"carte bancaire", "cartes bancaires"},
+	mask.Name:    {"nom", "noms"},
+	mask.Address: {"adresse", "adresses"},
 }
 
-var labelOrder = []mask.Kind{mask.Secret, mask.Email, mask.Phone, mask.IBAN, mask.NIR, mask.Card}
+var labelOrder = []mask.Kind{mask.Secret, mask.Name, mask.Address, mask.Email, mask.Phone, mask.IBAN, mask.NIR, mask.Card}
 
 type sessions struct {
 	mu   sync.Mutex

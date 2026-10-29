@@ -11,12 +11,14 @@ import (
 type Kind string
 
 const (
-	Secret Kind = "SECRET"
-	IBAN   Kind = "IBAN"
-	NIR    Kind = "NIR"
-	Card   Kind = "CARD"
-	Email  Kind = "EMAIL"
-	Phone  Kind = "PHONE"
+	Secret  Kind = "SECRET"
+	IBAN    Kind = "IBAN"
+	NIR     Kind = "NIR"
+	Card    Kind = "CARD"
+	Email   Kind = "EMAIL"
+	Phone   Kind = "PHONE"
+	Name    Kind = "NAME"
+	Address Kind = "ADDRESS"
 )
 
 type rule struct {
@@ -51,6 +53,9 @@ var rules = []rule{
 	{kind: Email, re: regexp.MustCompile(`[\p{L}\p{N}._%+\-]+@[\p{L}\p{N}\-]+(?:\.[\p{L}\p{N}\-]+)*\.\p{L}{2,}`), valid: personalEmail},
 	{kind: Phone, re: regexp.MustCompile(`(?:\+33 ?|0)[1-9](?:[ .\-]?\d{2}){4}`), bounded: true, valid: notDigitRun},
 	{kind: Phone, re: regexp.MustCompile(`\+[1-9]\d{0,2}(?:[ .\-]?\d{2,4}){3,5}`), bounded: true, valid: phoneLength},
+	{kind: Name, re: regexp.MustCompile(`\b(?:M\.|Mme\.?|Mlle\.?|Monsieur|Madame|Mademoiselle|Mr\.?|Mrs\.?|Ms\.?|Dr\.?|Docteur|Maître)[ \t]+(\p{Lu}(?:\.|[\p{L}'’\-]+)(?:[ \t]+(?:(?:de|du|des|la|le|van|von|di|da|d'|l')[ \t]*)?\p{Lu}[\p{L}'’\-]+){0,3})`), value: 1, valid: notCommonWord},
+	{kind: Address, re: regexp.MustCompile(`\b\d{1,4}(?:[ \t]?(?:bis|ter|quater|[A-D]))?,?[ \t]+(?i:rue|avenue|av\.|boulevard|bd|chemin|allée|allee|impasse|place|route|quai|cours|square|passage|sentier|voie|résidence|residence|lotissement|faubourg|rond-point|esplanade|parvis|promenade|hameau|cité|villa)[ \t]+(?:(?:de|du|des|la|le|les|d'|l'|d’|l’)[ \t]*)*\p{Lu}[\p{L}'’\-]*(?:[ \t]+(?:(?:de|du|des|la|le|les|et|sur|sous|en|d'|l'|d’|l’)[ \t]*)*\p{Lu}[\p{L}'’\-]*){0,5}(?:,?[ \t]+\d{5}[ \t]+\p{Lu}[\p{L}'’\-]*(?:[ \t\-]+\p{Lu}[\p{L}'’\-]*){0,3})?`)},
+	{kind: Address, re: regexp.MustCompile(`\b\d{1,5}[ \t]+(?:\p{Lu}[\p{L}'\-]*[ \t]+){1,4}(?:Street|St\.|Avenue|Ave\.|Road|Rd\.|Lane|Drive|Boulevard|Blvd\.?)`)},
 }
 
 var technicalMailboxes = map[string]bool{"root": true, "git": true, "ubuntu": true, "debian": true, "postgres": true, "www-data": true}
@@ -70,6 +75,8 @@ func personalEmail(v string) bool {
 	}
 	return true
 }
+
+func notCommonWord(v string) bool { return !notPersonal[strings.ToLower(v)] }
 
 func digitsOnly(v string) string {
 	return strings.Map(func(r rune) rune {

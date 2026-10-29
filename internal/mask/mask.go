@@ -68,6 +68,7 @@ func (m *Masker) find(text string) []Finding {
 			spans = append(spans, f)
 		}
 	}
+	spans = append(spans, personalFindings(text)...)
 	sort.SliceStable(spans, func(a, b int) bool {
 		if spans[a].Start != spans[b].Start {
 			return spans[a].Start < spans[b].Start

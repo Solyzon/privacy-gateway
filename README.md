@@ -19,7 +19,7 @@ le cache de prompts d'Anthropic.
 
 ## Fonctionnalités
 
-- Masque les secrets (clés d'API, jetons, mots de passe de `.env`, YAML et JSON, clés privées), les e-mails, téléphones, IBAN, numéros de sécurité sociale et cartes bancaires.
+- Masque les secrets (clés d'API, jetons, mots de passe de `.env`, YAML et JSON, clés privées), les noms et adresses postales des personnes, les e-mails, téléphones, IBAN, numéros de sécurité sociale et cartes bancaires.
 - Remet les vraies valeurs dans la réponse en flux et dans les commandes que Claude lance.
 - Affiche dans la statusline, pendant deux secondes et par session, ce qui vient d'être masqué.
 - Audite le poste et sort en erreur au moindre trou : service arrêté, réglage absent, canari qui fuit, programme qui parle à Anthropic sans passer par la passerelle, erreurs en série.
