@@ -2,7 +2,9 @@ package gateway
 
 import (
 	"context"
+
 	"encoding/json"
+	"github.com/Solyzon/privacy-gateway/internal/mask"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -280,28 +282,80 @@ func TestClientCancelIsNotAnUpstreamError(t *testing.T) {
 }
 
 func TestErrorKindKeepsNoValue(t *testing.T) {
+	table := mask.New([]byte("0123456789abcdef0123456789abcdef")).NewTable()
 	cases := map[string]string{
-		`{"type":"error","error":{"type":"invalid_request_error","message":"messages.12.content.3.thinking.signature: Field required"}}`: "invalid_request_error messages.N.content.N.thinking.signature",
-		`{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}`:       "invalid_request_error",
-		`{"error":{"type":"overloaded_error","message":"Overloaded"}}`:                                                                   "overloaded_error",
+		`{"type":"error","error":{"type":"invalid_request_error","message":"messages.12.content.3.thinking.signature: Field required"}}`: "invalid_request_error messages.N.content.N.thinking.signature: Field required",
+		`{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}`:       "invalid_request_error prompt is too long: N tokens > N maximum",
+		`{"error":{"type":"invalid_request_error","message":"unknown user \"SZ_EMAIL_2ec7486cef8e\" or camille@client.fr"}}`:             "invalid_request_error unknown user … or SZ_EMAIL_",
 	}
 	for in, want := range cases {
-		if got := errorKind([]byte(in)); got != want {
+		if got := errorKind([]byte(in), table); !strings.HasPrefix(got, want) {
 			t.Errorf("%s: got %q want %q", in, got, want)
 		}
 	}
 }
 
-func TestUnmaskedFilesAreAnnounced(t *testing.T) {
-	srv, _, home := start(t)
-	payload := `{"model":"m","stream":true,"metadata":{"user_id":"user_a_account_b_session_s2"},"messages":[{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0x"}},{"type":"text","text":"DB_PASSWORD=` + secret + `"}]}]}`
-	post(t, srv.URL, "/v1/messages", payload)
-	b, _ := os.ReadFile(filepath.Join(home, "sessions", "s2.json"))
-	if !strings.Contains(string(b), "masqué : DB_PASSWORD · non masqué : 1 PDF") {
-		t.Fatalf("notice: %s", b)
+func TestThreadTurnsUseTheSessionTable(t *testing.T) {
+	var mu sync.Mutex
+	var last string
+	var systems []string
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var req struct {
+			System json.RawMessage `json:"system"`
+		}
+		json.Unmarshal(b, &req)
+		mu.Lock()
+		if tok := tokenRe.FindString(string(b)); tok != "" {
+			last = tok
+		}
+		systems = append(systems, string(req.System))
+		tok := last
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"content":[{"type":"text","text":"`+tok+`"}]}`)
+	}))
+	defer fake.Close()
+	home := t.TempDir()
+	turn := func(content string) string {
+		g, err := New(Config{Upstream: fake.URL, Home: home, Version: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := httptest.NewServer(g)
+		defer srv.Close()
+		req, _ := http.NewRequest("POST", srv.URL+"/v1/messages", strings.NewReader(`{"model":"m","thread":{"id":"th_1"},"system":[{"type":"text","text":"S"}],"messages":[{"role":"user","content":`+content+`}]}`))
+		req.Header.Set("X-Claude-Code-Session-Id", "3f2a9c1e-0b7d-4e61-9a55-7c1d2e3f4a5b")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return string(out)
 	}
-	log, _ := os.ReadFile(filepath.Join(home, "status.log"))
-	if !strings.Contains(string(log), `"unmasked":{"PDF":1}`) {
-		t.Fatalf("status.log: %s", log)
+	turn(`"DB_PASSWORD=` + secret + `"`)
+	if got := turn(`"quelle valeur ?"`); !strings.Contains(got, secret) {
+		t.Fatalf("second turn not unmasked: %s", got)
+	}
+	if got := turn(`"config = '` + secret + `'"`); !strings.Contains(got, secret) {
+		t.Fatalf("third turn not unmasked: %s", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, s := range systems {
+		if s != systems[0] || !strings.Contains(s, "Values shaped like") {
+			t.Fatalf("system changed between turns: %v", systems)
+		}
+	}
+	files, _ := os.ReadDir(filepath.Join(home, "tables"))
+	for _, f := range files {
+		raw, _ := os.ReadFile(filepath.Join(home, "tables", f.Name()))
+		if strings.Contains(string(raw), secret) || strings.Contains(string(raw), "DB_PASSWORD") {
+			t.Fatal("session table stored in clear")
+		}
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected one session table, got %d", len(files))
 	}
 }

@@ -89,31 +89,70 @@ func (m *Masker) find(text string) []Finding {
 	return kept
 }
 
+type Record struct {
+	Kind  Kind   `json:"k"`
+	Name  string `json:"n,omitempty"`
+	Value string `json:"v"`
+}
+
 type Table struct {
 	m        *Masker
 	forward  map[string]string
 	backward map[string]string
 	entries  map[string]Entry
+	values   map[string]string
+	used     map[string]bool
 	order    []string
+	added    int
 	replacer *strings.Replacer
 }
 
 func (m *Masker) NewTable() *Table {
-	return &Table{m: m, forward: map[string]string{}, backward: map[string]string{}, entries: map[string]Entry{}}
+	return &Table{m: m, forward: map[string]string{}, backward: map[string]string{}, entries: map[string]Entry{}, values: map[string]string{}, used: map[string]bool{}}
 }
 
-func (t *Table) add(kind Kind, value, name string) string {
-	if tok, ok := t.forward[value]; ok {
-		return tok
-	}
+func (t *Table) store(kind Kind, value, name string) string {
 	tok := t.m.token(kind, value)
 	t.forward[value] = tok
 	t.backward[tok] = value
 	t.entries[tok] = Entry{Token: tok, Kind: kind, Name: name}
-	t.order = append(t.order, tok)
+	t.values[tok] = value
 	t.replacer = nil
 	return tok
 }
+
+func (t *Table) add(kind Kind, value, name string) string {
+	tok, ok := t.forward[value]
+	if !ok {
+		tok = t.store(kind, value, name)
+		t.added++
+	}
+	if !t.used[tok] {
+		t.used[tok] = true
+		t.order = append(t.order, tok)
+	}
+	return tok
+}
+
+func (t *Table) Import(records []Record) {
+	for _, r := range records {
+		if _, ok := t.forward[r.Value]; !ok {
+			t.store(r.Kind, r.Value, r.Name)
+		}
+	}
+}
+
+func (t *Table) Records() []Record {
+	out := make([]Record, 0, len(t.values))
+	for tok, v := range t.values {
+		e := t.entries[tok]
+		out = append(out, Record{Kind: e.Kind, Name: e.Name, Value: v})
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Value < out[b].Value })
+	return out
+}
+
+func (t *Table) Added() int { return t.added }
 
 func (t *Table) Learn(text string) {
 	for _, f := range t.m.find(text) {
@@ -170,7 +209,16 @@ func (t *Table) Mask(text string) string {
 		pos = f.End
 	}
 	out.WriteString(known.Replace(text[pos:]))
-	return out.String()
+	masked := out.String()
+	if strings.Contains(masked, "SZ_") {
+		for _, tok := range Placeholder.FindAllString(masked, -1) {
+			if _, ok := t.entries[tok]; ok && !t.used[tok] {
+				t.used[tok] = true
+				t.order = append(t.order, tok)
+			}
+		}
+	}
+	return masked
 }
 
 func (t *Table) unmask(text string, encode func(string) string) string {

@@ -247,3 +247,20 @@ func TestRemaskEscapedValue(t *testing.T) {
 		t.Fatalf("escaped value left in clear: %s", out)
 	}
 }
+
+func TestImportedValuesAreRemaskedAndUnmasked(t *testing.T) {
+	m := testMasker()
+	first := m.NewTable()
+	first.Learn(env)
+	first.Mask(env)
+	second := m.NewTable()
+	second.Import(first.Records())
+	out := second.Mask(`config["db"] = "Tr0ub4dor&3-horse"`)
+	if strings.Contains(out, "Tr0ub4dor&3-horse") || second.Added() != 0 || len(second.Entries()) != 1 {
+		t.Fatalf("got %s added=%d entries=%+v", out, second.Added(), second.Entries())
+	}
+	tok := Placeholder.FindString(out)
+	if second.Unmask("valeur "+tok) != "valeur Tr0ub4dor&3-horse" {
+		t.Fatal("imported value not unmasked")
+	}
+}

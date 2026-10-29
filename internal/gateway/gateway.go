@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +80,7 @@ type Gateway struct {
 	client   *http.Client
 	log      *statusLog
 	sessions *sessions
+	tables   *tables
 	canary   string
 }
 
@@ -118,12 +120,17 @@ func New(cfg Config) (*Gateway, error) {
 	transport.ResponseHeaderTimeout = 10 * time.Minute
 	canary := make([]byte, 12)
 	rand.Read(canary)
+	tbl, err := newTables(filepath.Join(cfg.Home, "tables"), key)
+	if err != nil {
+		return nil, err
+	}
 	return &Gateway{
 		cfg:      cfg,
 		masker:   mask.New(key),
 		client:   &http.Client{Transport: transport},
 		log:      &statusLog{path: filepath.Join(cfg.Home, "status.log")},
 		sessions: newSessions(filepath.Join(cfg.Home, "sessions")),
+		tables:   tbl,
 		canary:   hex.EncodeToString(canary),
 	}, nil
 }
@@ -161,6 +168,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	dest := g.route(r)
 	var payload io.Reader = r.Body
 	var table *mask.Table
+	var original []byte
 	if masked(r, dest) {
 		if enc := r.Header.Get("Content-Encoding"); enc != "" && enc != "identity" {
 			entry.Status = http.StatusUnsupportedMediaType
@@ -174,7 +182,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		t := time.Now()
-		out, tbl, err := body.MaskRequest(raw, g.masker)
+		session := sessionKey(r, raw)
+		tbl := g.masker.NewTable()
+		tbl.Import(g.tables.Load(session))
+		out, err := body.MaskWith(raw, tbl)
 		entry.MaskMs = float64(time.Since(t).Microseconds()) / 1000
 		if err != nil {
 			entry.Status = http.StatusBadRequest
@@ -182,6 +193,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		table = tbl
+		if tbl.Added() > 0 {
+			if err := g.tables.Save(session, tbl.Records()); err != nil {
+				entry.Error = "table not saved"
+			}
+		}
 		entry.Masked = counts(tbl.Entries())
 		for _, f := range body.Attachments(raw) {
 			if entry.Unmasked == nil {
@@ -189,14 +205,19 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			entry.Unmasked[f.Kind]++
 		}
-		if dest.api == anthropicAPI && len(tbl.Entries()) > 0 {
+		if dest.api == anthropicAPI {
 			if noted, err := body.AddSystemNote(out, body.PlaceholderNote); err == nil {
 				out = noted
 			}
 		}
 		if dest.api == anthropicAPI && r.URL.Path == "/v1/messages" {
-			g.sessions.notice(body.SessionID(raw), tbl.Entries(), body.Attachments(raw))
+			id := body.SessionID(raw)
+			if id == "" {
+				id = session
+			}
+			g.sessions.notice(id, tbl.Entries(), body.Attachments(raw))
 		}
+		original = raw
 		payload = bytes.NewReader(out)
 	}
 
@@ -252,7 +273,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if resp.StatusCode >= 400 {
-			entry.Error = errorKind(raw)
+			entry.Error = errorKind(raw, table)
+			entry.Shape = shape(r.Header, original)
 		}
 		if out, err := body.UnmaskResponse(raw, table); err == nil {
 			raw = out
@@ -336,27 +358,32 @@ type logEntry struct {
 	Masked   map[string]int `json:"masked,omitempty"`
 	Error    string         `json:"error,omitempty"`
 	Unmasked map[string]int `json:"unmasked,omitempty"`
+	Shape    []string       `json:"shape,omitempty"`
 }
 
 const statusClientClosed = 499
 
-var errorShape = regexp.MustCompile(`\d+`)
-
-func errorKind(raw []byte) string {
-	var e struct {
-		Error struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
+func shape(h http.Header, raw []byte) []string {
+	var out []string
+	for k := range h {
+		if l := strings.ToLower(k); strings.HasPrefix(l, "anthropic-") || strings.HasPrefix(l, "x-") {
+			out = append(out, "header:"+l)
+		}
 	}
-	if json.Unmarshal(raw, &e) != nil {
-		return ""
+	var top map[string]json.RawMessage
+	if json.Unmarshal(raw, &top) == nil {
+		for k, v := range top {
+			n := ""
+			if k == "messages" {
+				var list []json.RawMessage
+				json.Unmarshal(v, &list)
+				n = fmt.Sprintf("=%d", len(list))
+			}
+			out = append(out, "body:"+k+n)
+		}
 	}
-	field := e.Error.Message
-	if i := strings.Index(field, ":"); i > 0 && !strings.ContainsAny(field[:i], " \"'") {
-		return e.Error.Type + " " + errorShape.ReplaceAllString(field[:i], "N")
-	}
-	return e.Error.Type
+	sort.Strings(out)
+	return out
 }
 
 func upstreamError(err error) string {
@@ -371,6 +398,29 @@ func upstreamError(err error) string {
 		return "tls"
 	}
 	return "connection"
+}
+
+var (
+	errorDigits = regexp.MustCompile(`\d+`)
+	errorQuoted = regexp.MustCompile("`[^`]*`|\"[^\"]*\"|'[^']*'")
+)
+
+func errorKind(raw []byte, table *mask.Table) string {
+	var e struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &e) != nil {
+		return ""
+	}
+	message := errorQuoted.ReplaceAllString(e.Error.Message, "…")
+	message = errorDigits.ReplaceAllString(message, "N")
+	if len(message) > 160 {
+		message = message[:160]
+	}
+	return strings.TrimSpace(e.Error.Type + " " + table.Mask(message))
 }
 
 type statusLog struct {

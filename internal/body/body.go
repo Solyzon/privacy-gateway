@@ -192,13 +192,18 @@ func rewrite(b []byte, root *node, fn func(key, text string) string) []byte {
 }
 
 func MaskRequest(b []byte, m *mask.Masker) ([]byte, *mask.Table, error) {
+	table := m.NewTable()
+	out, err := MaskWith(b, table)
+	return out, table, err
+}
+
+func MaskWith(b []byte, table *mask.Table) ([]byte, error) {
 	root, err := parse(b)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	table := m.NewTable()
 	root.strings("", func(n *node, _ string) { table.Learn(n.text) })
-	return rewrite(b, root, func(_, s string) string { return table.Mask(s) }), table, nil
+	return rewrite(b, root, func(_, s string) string { return table.Mask(s) }), nil
 }
 
 func Rewrite(b []byte, fn func(key, text string) string) ([]byte, error) {
