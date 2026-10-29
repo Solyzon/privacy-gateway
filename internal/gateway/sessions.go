@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Solyzon/privacy-gateway/internal/body"
 	"github.com/Solyzon/privacy-gateway/internal/mask"
 )
 
@@ -80,8 +81,24 @@ func describe(entries []mask.Entry) string {
 	return sessionPrefix + strings.Join(parts, ", ")
 }
 
-func (s *sessions) notice(id string, entries []mask.Entry) {
-	if !validSession.MatchString(id) || len(entries) == 0 {
+func describeFiles(count map[string]int) string {
+	var parts []string
+	for _, k := range []string{"PDF", "image", "fichier"} {
+		n := count[k]
+		if n == 0 {
+			continue
+		}
+		label := k
+		if n > 1 && k != "PDF" {
+			label += "s"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", n, label))
+	}
+	return "non masqué : " + strings.Join(parts, ", ")
+}
+
+func (s *sessions) notice(id string, entries []mask.Entry, files []body.Attachment) {
+	if !validSession.MatchString(id) || (len(entries) == 0 && len(files) == 0) {
 		return
 	}
 	s.mu.Lock()
@@ -108,11 +125,25 @@ func (s *sessions) notice(id string, entries []mask.Entry) {
 			fresh = append(fresh, e)
 		}
 	}
+	clear := map[string]int{}
+	for _, f := range files {
+		if !seen["file:"+f.Hash] {
+			seen["file:"+f.Hash] = true
+			clear[f.Kind]++
+		}
+	}
 	s.mu.Unlock()
-	if len(fresh) == 0 {
+	var parts []string
+	if len(fresh) > 0 {
+		parts = append(parts, describe(fresh))
+	}
+	if len(clear) > 0 {
+		parts = append(parts, describeFiles(clear))
+	}
+	if len(parts) == 0 {
 		return
 	}
-	payload, _ := json.Marshal(map[string]any{"time": time.Now().UnixMilli(), "text": describe(fresh)})
+	payload, _ := json.Marshal(map[string]any{"time": time.Now().UnixMilli(), "text": strings.Join(parts, " · ")})
 	if os.MkdirAll(s.dir, 0o700) != nil {
 		return
 	}

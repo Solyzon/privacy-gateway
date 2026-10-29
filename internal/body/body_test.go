@@ -121,3 +121,15 @@ func TestAddSystemNote(t *testing.T) {
 		}
 	}
 }
+
+func TestAttachmentsAreListed(t *testing.T) {
+	in := `{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0x"}},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBOR"}}]}],"input":[{"type":"input_image","image_url":"data:image/jpeg;base64,/9j/sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA"}]}`
+	got := Attachments([]byte(in))
+	if len(got) != 3 || got[0].Kind != "PDF" || got[1].Kind != "image" || got[2].Kind != "image" {
+		t.Fatalf("got %+v", got)
+	}
+	out, _, _ := MaskRequest([]byte(in), masker())
+	if !strings.Contains(string(out), "data:image/jpeg;base64,/9j/sk-ant-api03-AAAA") {
+		t.Fatalf("data URL rewritten: %s", out)
+	}
+}

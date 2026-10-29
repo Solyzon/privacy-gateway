@@ -278,3 +278,30 @@ func TestClientCancelIsNotAnUpstreamError(t *testing.T) {
 		t.Fatalf("status.log: %s", log)
 	}
 }
+
+func TestErrorKindKeepsNoValue(t *testing.T) {
+	cases := map[string]string{
+		`{"type":"error","error":{"type":"invalid_request_error","message":"messages.12.content.3.thinking.signature: Field required"}}`: "invalid_request_error messages.N.content.N.thinking.signature",
+		`{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}`:       "invalid_request_error",
+		`{"error":{"type":"overloaded_error","message":"Overloaded"}}`:                                                                   "overloaded_error",
+	}
+	for in, want := range cases {
+		if got := errorKind([]byte(in)); got != want {
+			t.Errorf("%s: got %q want %q", in, got, want)
+		}
+	}
+}
+
+func TestUnmaskedFilesAreAnnounced(t *testing.T) {
+	srv, _, home := start(t)
+	payload := `{"model":"m","stream":true,"metadata":{"user_id":"user_a_account_b_session_s2"},"messages":[{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0x"}},{"type":"text","text":"DB_PASSWORD=` + secret + `"}]}]}`
+	post(t, srv.URL, "/v1/messages", payload)
+	b, _ := os.ReadFile(filepath.Join(home, "sessions", "s2.json"))
+	if !strings.Contains(string(b), "masqué : DB_PASSWORD · non masqué : 1 PDF") {
+		t.Fatalf("notice: %s", b)
+	}
+	log, _ := os.ReadFile(filepath.Join(home, "status.log"))
+	if !strings.Contains(string(log), `"unmasked":{"PDF":1}`) {
+		t.Fatalf("status.log: %s", log)
+	}
+}

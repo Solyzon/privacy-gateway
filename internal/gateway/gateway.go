@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -182,13 +183,19 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		table = tbl
 		entry.Masked = counts(tbl.Entries())
+		for _, f := range body.Attachments(raw) {
+			if entry.Unmasked == nil {
+				entry.Unmasked = map[string]int{}
+			}
+			entry.Unmasked[f.Kind]++
+		}
 		if dest.api == anthropicAPI && len(tbl.Entries()) > 0 {
 			if noted, err := body.AddSystemNote(out, body.PlaceholderNote); err == nil {
 				out = noted
 			}
 		}
 		if dest.api == anthropicAPI && r.URL.Path == "/v1/messages" {
-			g.sessions.notice(body.SessionID(raw), tbl.Entries())
+			g.sessions.notice(body.SessionID(raw), tbl.Entries(), body.Attachments(raw))
 		}
 		payload = bytes.NewReader(out)
 	}
@@ -243,6 +250,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			entry.Status = http.StatusBadGateway
 			return
+		}
+		if resp.StatusCode >= 400 {
+			entry.Error = errorKind(raw)
 		}
 		if out, err := body.UnmaskResponse(raw, table); err == nil {
 			raw = out
@@ -317,17 +327,37 @@ func counts(entries []mask.Entry) map[string]int {
 }
 
 type logEntry struct {
-	Time   string         `json:"time"`
-	Method string         `json:"method"`
-	Path   string         `json:"path"`
-	Status int            `json:"status"`
-	Ms     int64          `json:"ms"`
-	MaskMs float64        `json:"mask_ms"`
-	Masked map[string]int `json:"masked,omitempty"`
-	Error  string         `json:"error,omitempty"`
+	Time     string         `json:"time"`
+	Method   string         `json:"method"`
+	Path     string         `json:"path"`
+	Status   int            `json:"status"`
+	Ms       int64          `json:"ms"`
+	MaskMs   float64        `json:"mask_ms"`
+	Masked   map[string]int `json:"masked,omitempty"`
+	Error    string         `json:"error,omitempty"`
+	Unmasked map[string]int `json:"unmasked,omitempty"`
 }
 
 const statusClientClosed = 499
+
+var errorShape = regexp.MustCompile(`\d+`)
+
+func errorKind(raw []byte) string {
+	var e struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &e) != nil {
+		return ""
+	}
+	field := e.Error.Message
+	if i := strings.Index(field, ":"); i > 0 && !strings.ContainsAny(field[:i], " \"'") {
+		return e.Error.Type + " " + errorShape.ReplaceAllString(field[:i], "N")
+	}
+	return e.Error.Type
+}
 
 func upstreamError(err error) string {
 	var dns *net.DNSError

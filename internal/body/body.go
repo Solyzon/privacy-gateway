@@ -2,6 +2,8 @@ package body
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -143,7 +145,9 @@ func (n *node) field(key string) *node {
 func (n *node) strings(key string, visit func(n *node, key string)) {
 	switch n.kind {
 	case 's':
-		visit(n, key)
+		if !strings.HasPrefix(n.text, "data:") {
+			visit(n, key)
+		}
 	case 'a':
 		for _, v := range n.values {
 			v.strings(key, visit)
@@ -274,4 +278,69 @@ func AddSystemNote(b []byte, note string) ([]byte, error) {
 		return insert(system.end-1, sep+block), nil
 	}
 	return b, nil
+}
+
+type Attachment struct {
+	Kind string
+	Hash string
+}
+
+func attachmentKind(mediaType string) string {
+	switch {
+	case mediaType == "application/pdf":
+		return "PDF"
+	case strings.HasPrefix(mediaType, "image/"):
+		return "image"
+	}
+	return "fichier"
+}
+
+func Attachments(b []byte) []Attachment {
+	if !bytes.Contains(b, []byte(`"base64"`)) && !bytes.Contains(b, []byte(`"data:`)) {
+		return nil
+	}
+	root, err := parse(b)
+	if err != nil {
+		return nil
+	}
+	var out []Attachment
+	var walk func(n *node)
+	walk = func(n *node) {
+		switch n.kind {
+		case 'a':
+			for _, v := range n.values {
+				walk(v)
+			}
+		case 'o':
+			kind, data := "", ""
+			if t := n.field("type"); t != nil && t.text == "base64" {
+				if m := n.field("media_type"); m != nil {
+					kind = attachmentKind(m.text)
+				}
+				if d := n.field("data"); d != nil {
+					data = d.text
+				}
+			}
+			for _, v := range n.values {
+				if v.kind == 's' && strings.HasPrefix(v.text, "data:") {
+					media := strings.TrimPrefix(v.text[:strings.IndexAny(v.text+";,", ";,")], "data:")
+					out = append(out, Attachment{Kind: attachmentKind(media), Hash: digest(v.text)})
+				}
+			}
+			if kind != "" {
+				out = append(out, Attachment{Kind: kind, Hash: digest(data)})
+				return
+			}
+			for _, v := range n.values {
+				walk(v)
+			}
+		}
+	}
+	walk(root)
+	return out
+}
+
+func digest(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:8])
 }
