@@ -5,6 +5,7 @@ package livetest
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -27,14 +28,15 @@ var secrets = []string{"Tr0ub4dor&3-horse", "glpat-EXAMPLE", "camille.durand@ora
 const env = "APP_ENV=production\nDB_PASSWORD=Tr0ub4dor&3-horse\nGITLAB_TOKEN=glpat-EXAMPLE\nSUPPORT_CONTACT=camille.durand@orange.fr\n"
 
 type recorder struct {
-	mu       sync.Mutex
-	requests []string
-	headers  []http.Header
-	usage    []map[string]any
+	mu        sync.Mutex
+	requests  []string
+	responses []string
+	headers   []http.Header
+	usage     []map[string]any
 }
 
-func (r *recorder) start(t *testing.T) *httptest.Server {
-	target, _ := url.Parse("https://api.anthropic.com")
+func (r *recorder) start(t *testing.T, upstream string) *httptest.Server {
+	target, _ := url.Parse(upstream)
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.FlushInterval = -1
 	director := proxy.Director
@@ -46,6 +48,9 @@ func (r *recorder) start(t *testing.T) *httptest.Server {
 		raw, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(raw))
+		r.mu.Lock()
+		r.responses = append(r.responses, string(raw))
+		r.mu.Unlock()
 		if resp.Request.URL.Path == "/v1/messages" {
 			for _, line := range strings.Split(string(raw), "\n") {
 				var ev struct {
@@ -134,7 +139,7 @@ func statuses(t *testing.T, home string) map[int]int {
 			Status int     `json:"status"`
 			MaskMs float64 `json:"mask_ms"`
 		}
-		if json.Unmarshal([]byte(line), &e) == nil && strings.HasPrefix(e.Path, "/v1/messages") {
+		if json.Unmarshal([]byte(line), &e) == nil && (strings.HasPrefix(e.Path, "/v1/messages") || strings.HasSuffix(e.Path, "/responses")) {
 			out[e.Status]++
 			ms = append(ms, e.MaskMs)
 		}
@@ -151,7 +156,7 @@ func TestLiveClaudeCode(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, ".env"), []byte(env), 0o600)
 	home := t.TempDir()
 	rec := &recorder{}
-	up := rec.start(t)
+	up := rec.start(t, "https://api.anthropic.com")
 
 	gw := startGateway(t, up.URL, home)
 	first := claude(t, dir, gw.URL, "Lis le fichier .env. Puis écris config.py qui définit DB_PASSWORD, GITLAB_TOKEN et SUPPORT_CONTACT comme constantes Python avec exactement les valeurs du .env. Puis lance python3 -c \"import config; print(len(config.DB_PASSWORD))\" et dis-moi le résultat. Puis relis config.py pour vérifier.")
@@ -205,4 +210,57 @@ func TestLiveClaudeCode(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, "sessions", first.SessionID+".json")); err != nil {
 		t.Errorf("no masking notice for session %s: %v", first.SessionID, err)
 	}
+}
+
+func TestLiveCodex(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "settings.txt"), []byte(env), 0o600)
+	home := t.TempDir()
+	rec := &recorder{}
+	up := rec.start(t, "https://chatgpt.com/backend-api/codex")
+	g, err := gateway.New(gateway.Config{Upstream: "http://127.0.0.1:1", ChatGPT: up.URL, Home: home, Version: "live"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := httptest.NewServer(g)
+	defer gw.Close()
+	args := []string{"exec", "--skip-git-repo-check", "--ephemeral", "-s", "workspace-write",
+		"-c", "model_provider=pgw",
+		"-c", `model_providers.pgw={name="pgw",base_url="` + gw.URL + `/codex",wire_api="responses",requires_openai_auth=true}`,
+		"Lis settings.txt. Puis écris config.py qui définit DB_PASSWORD, GITLAB_TOKEN et SUPPORT_CONTACT comme constantes Python avec exactement les valeurs du fichier. Puis lance python3 -c \"import config; print(len(config.DB_PASSWORD))\" et donne le résultat."}
+	name := "codex"
+	if _, err := exec.LookPath("codex"); err != nil {
+		name, args = "npx", append([]string{"-y", "@openai/codex@latest"}, args...)
+	}
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	start := time.Now()
+	out, err := cmd.CombinedOutput()
+	t.Logf("codex in %s", time.Since(start).Round(time.Second))
+	if err != nil {
+		t.Fatalf("codex failed: %v %s", err, out[max(0, len(out)-2000):])
+	}
+	config, err := os.ReadFile(filepath.Join(dir, "config.py"))
+	if err != nil {
+		t.Fatalf("no config.py: %s", out[max(0, len(out)-2000):])
+	}
+	for _, s := range secrets {
+		if !strings.Contains(string(config), s) {
+			t.Errorf("config.py lacks the real value %q:\n%s\n%s", s, config, out[max(0, len(out)-1500):])
+		}
+	}
+	checkUpstream(t, rec)
+	rec.mu.Lock()
+	t.Logf("%d requests reached the provider", len(rec.requests))
+	if dump := os.Getenv("PGW_LIVE_DUMP"); dump != "" {
+		os.MkdirAll(dump, 0o700)
+		for i, b := range rec.requests {
+			os.WriteFile(filepath.Join(dump, fmt.Sprintf("req-%d.txt", i)), []byte(b), 0o600)
+		}
+		for i, b := range rec.responses {
+			os.WriteFile(filepath.Join(dump, fmt.Sprintf("resp-%d.txt", i)), []byte(b), 0o600)
+		}
+	}
+	rec.mu.Unlock()
+	t.Logf("statuses %v", statuses(t, home))
 }

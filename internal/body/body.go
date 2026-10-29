@@ -9,9 +9,19 @@ import (
 	"github.com/Solyzon/privacy-gateway/internal/mask"
 )
 
-var protectedKeys = map[string]bool{"signature": true, "id": true, "tool_use_id": true, "model": true, "type": true, "role": true, "media_type": true}
+var protectedKeys = map[string]bool{
+	"signature": true, "id": true, "tool_use_id": true, "model": true, "type": true, "role": true, "media_type": true,
+	"call_id": true, "item_id": true, "response_id": true, "previous_response_id": true, "encrypted_content": true,
+	"prompt_cache_key": true, "obfuscation": true,
+}
 
-var opaqueTypes = map[string]bool{"thinking": true, "redacted_thinking": true, "base64": true}
+var opaqueTypes = map[string]bool{"thinking": true, "redacted_thinking": true, "base64": true, "reasoning": true}
+
+var jsonTextKeys = map[string]bool{"partial_json": true, "arguments": true, "input": true}
+
+func JSONText(key, s string) bool {
+	return jsonTextKeys[key] && !strings.HasPrefix(s, "*** Begin Patch")
+}
 
 type node struct {
 	start, end int
@@ -130,13 +140,13 @@ func (n *node) field(key string) *node {
 	return nil
 }
 
-func (n *node) strings(visit func(*node)) {
+func (n *node) strings(key string, visit func(n *node, key string)) {
 	switch n.kind {
 	case 's':
-		visit(n)
+		visit(n, key)
 	case 'a':
 		for _, v := range n.values {
-			v.strings(visit)
+			v.strings(key, visit)
 		}
 	case 'o':
 		if t := n.field("type"); t != nil && t.kind == 's' && opaqueTypes[t.text] {
@@ -144,7 +154,7 @@ func (n *node) strings(visit func(*node)) {
 		}
 		for i, v := range n.values {
 			if !protectedKeys[n.keys[i]] {
-				v.strings(visit)
+				v.strings(n.keys[i], visit)
 			}
 		}
 	}
@@ -158,11 +168,11 @@ func encode(s string) []byte {
 	return bytes.TrimSuffix(b.Bytes(), []byte("\n"))
 }
 
-func rewrite(b []byte, root *node, fn func(string) string) []byte {
+func rewrite(b []byte, root *node, fn func(key, text string) string) []byte {
 	var out bytes.Buffer
 	pos := 0
-	root.strings(func(n *node) {
-		next := fn(n.text)
+	root.strings("", func(n *node, key string) {
+		next := fn(key, n.text)
 		if next == n.text {
 			return
 		}
@@ -183,16 +193,25 @@ func MaskRequest(b []byte, m *mask.Masker) ([]byte, *mask.Table, error) {
 		return nil, nil, err
 	}
 	table := m.NewTable()
-	root.strings(func(n *node) { table.Learn(n.text) })
-	return rewrite(b, root, table.Mask), table, nil
+	root.strings("", func(n *node, _ string) { table.Learn(n.text) })
+	return rewrite(b, root, func(_, s string) string { return table.Mask(s) }), table, nil
 }
 
-func UnmaskResponse(b []byte, table *mask.Table) ([]byte, error) {
+func Rewrite(b []byte, fn func(key, text string) string) ([]byte, error) {
 	root, err := parse(b)
 	if err != nil {
 		return nil, err
 	}
-	return rewrite(b, root, table.Unmask), nil
+	return rewrite(b, root, fn), nil
+}
+
+func UnmaskResponse(b []byte, table *mask.Table) ([]byte, error) {
+	return Rewrite(b, func(key, s string) string {
+		if JSONText(key, s) {
+			return table.UnmaskJSON(s)
+		}
+		return table.Unmask(s)
+	})
 }
 
 func SessionID(b []byte) string {
@@ -218,4 +237,41 @@ func SessionID(b []byte) string {
 		return nested.SessionID
 	}
 	return ""
+}
+
+const PlaceholderNote = "Values shaped like SZ_<KIND>_<12 hex digits> are placeholders set by a local privacy gateway for secrets or personal data you cannot see. Use them exactly as written in code, commands and answers: the real value replaces them before any tool runs and before the user reads your answer. Never guess, compare or check the real value, its length or its format, and never say the value is fake or unknown."
+
+func AddSystemNote(b []byte, note string) ([]byte, error) {
+	root, err := parse(b)
+	if err != nil || root.kind != 'o' {
+		return nil, errSyntax
+	}
+	block := `{"type":"text","text":` + string(encode(note)) + `}`
+	insert := func(at int, text string) []byte {
+		out := make([]byte, 0, len(b)+len(text))
+		out = append(out, b[:at]...)
+		out = append(out, text...)
+		return append(out, b[at:]...)
+	}
+	system := root.field("system")
+	switch {
+	case system == nil:
+		sep := ","
+		if len(root.values) == 0 {
+			sep = ""
+		}
+		return insert(root.end-1, sep+`"system":[`+block+`]`), nil
+	case system.kind == 's':
+		var out []byte
+		out = append(out, b[:system.start]...)
+		out = append(out, encode(system.text+"\n\n"+note)...)
+		return append(out, b[system.end:]...), nil
+	case system.kind == 'a':
+		sep := ","
+		if len(system.values) == 0 {
+			sep = ""
+		}
+		return insert(system.end-1, sep+block), nil
+	}
+	return b, nil
 }

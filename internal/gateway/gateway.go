@@ -32,9 +32,44 @@ var hopHeaders = map[string]bool{
 
 type Config struct {
 	Upstream string
+	ChatGPT  string
+	OpenAI   string
 	Home     string
 	Version  string
 }
+
+const (
+	anthropicAPI = iota
+	responsesAPI
+)
+
+type target struct {
+	url string
+	api int
+}
+
+func (g *Gateway) route(r *http.Request) target {
+	path := r.URL.Path
+	switch {
+	case path == "/codex" || strings.HasPrefix(path, "/codex/"):
+		return target{url: g.cfg.ChatGPT + strings.TrimPrefix(r.URL.RequestURI(), "/codex"), api: responsesAPI}
+	case path == "/openai" || strings.HasPrefix(path, "/openai/"):
+		return target{url: g.cfg.OpenAI + strings.TrimPrefix(r.URL.RequestURI(), "/openai"), api: responsesAPI}
+	}
+	return target{url: g.cfg.Upstream + r.URL.RequestURI(), api: anthropicAPI}
+}
+
+func masked(r *http.Request, t target) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	if t.api == responsesAPI {
+		return strings.HasPrefix(r.Header.Get("Content-Type"), "application/json")
+	}
+	return r.URL.Path == "/v1/messages" || r.URL.Path == "/v1/messages/count_tokens"
+}
+
+type unmasker interface{ Event([]byte) []byte }
 
 type Gateway struct {
 	cfg      Config
@@ -67,6 +102,15 @@ func New(cfg Config) (*Gateway, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cfg.ChatGPT == "" {
+		cfg.ChatGPT = "https://chatgpt.com/backend-api/codex"
+	}
+	if cfg.OpenAI == "" {
+		cfg.OpenAI = "https://api.openai.com"
+	}
+	for _, u := range []*string{&cfg.Upstream, &cfg.ChatGPT, &cfg.OpenAI} {
+		*u = strings.TrimRight(*u, "/")
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DisableCompression = true
 	transport.ResponseHeaderTimeout = 10 * time.Minute
@@ -94,10 +138,6 @@ func (g *Gateway) healthy() bool {
 	return err == nil && !strings.Contains(string(out), g.canary) && strings.Contains(string(out), "SZ_SECRET_")
 }
 
-func masked(r *http.Request) bool {
-	return r.Method == http.MethodPost && (r.URL.Path == "/v1/messages" || r.URL.Path == "/v1/messages/count_tokens")
-}
-
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/healthz" {
 		if !g.healthy() {
@@ -116,9 +156,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.log.write(entry)
 	}()
 
+	dest := g.route(r)
 	var payload io.Reader = r.Body
 	var table *mask.Table
-	if masked(r) {
+	if masked(r, dest) {
+		if enc := r.Header.Get("Content-Encoding"); enc != "" && enc != "identity" {
+			entry.Status = http.StatusUnsupportedMediaType
+			apiError(w, entry.Status, "invalid_request_error", "compressed body cannot be inspected, nothing was sent")
+			return
+		}
 		raw, err := io.ReadAll(io.LimitReader(r.Body, maxBody+1))
 		if err != nil || len(raw) > maxBody {
 			entry.Status = http.StatusRequestEntityTooLarge
@@ -135,13 +181,18 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		table = tbl
 		entry.Masked = counts(tbl.Entries())
-		if r.URL.Path == "/v1/messages" {
+		if dest.api == anthropicAPI && len(tbl.Entries()) > 0 {
+			if noted, err := body.AddSystemNote(out, body.PlaceholderNote); err == nil {
+				out = noted
+			}
+		}
+		if dest.api == anthropicAPI && r.URL.Path == "/v1/messages" {
 			g.sessions.notice(body.SessionID(raw), tbl.Entries())
 		}
 		payload = bytes.NewReader(out)
 	}
 
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, strings.TrimRight(g.cfg.Upstream, "/")+r.URL.RequestURI(), payload)
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, dest.url, payload)
 	if err != nil {
 		entry.Status = http.StatusBadGateway
 		apiError(w, entry.Status, "api_error", "bad upstream address")
@@ -167,12 +218,22 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	contentType := resp.Header.Get("Content-Type")
+	src := bufio.NewReaderSize(resp.Body, 64<<10)
+	sse := strings.HasPrefix(contentType, "text/event-stream")
+	if table != nil && !sse && !strings.HasPrefix(contentType, "application/json") {
+		head, _ := src.Peek(6)
+		sse = bytes.HasPrefix(head, []byte("event:")) || bytes.HasPrefix(head, []byte("data:"))
+	}
 	switch {
-	case table != nil && strings.HasPrefix(contentType, "text/event-stream"):
+	case table != nil && sse:
 		w.WriteHeader(resp.StatusCode)
-		relayEvents(w, resp.Body, stream.New(table))
+		var u unmasker = stream.New(table)
+		if dest.api == responsesAPI {
+			u = stream.NewResponses(table)
+		}
+		relayEvents(w, src, u)
 	case table != nil && strings.HasPrefix(contentType, "application/json"):
-		raw, err := io.ReadAll(resp.Body)
+		raw, err := io.ReadAll(src)
 		if err != nil {
 			entry.Status = http.StatusBadGateway
 			return
@@ -188,11 +249,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Length", n)
 		}
 		w.WriteHeader(resp.StatusCode)
-		copyFlushing(w, resp.Body)
+		copyFlushing(w, src)
 	}
 }
 
-func relayEvents(w http.ResponseWriter, r io.Reader, u *stream.Unmasker) {
+func relayEvents(w http.ResponseWriter, r io.Reader, u unmasker) {
 	flusher, _ := w.(http.Flusher)
 	reader := bufio.NewReaderSize(r, 64<<10)
 	var event bytes.Buffer

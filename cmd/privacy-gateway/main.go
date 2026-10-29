@@ -39,11 +39,14 @@ func main() {
 		err = svc.Install()
 		if err == nil {
 			fmt.Println("installé, Claude Code passe par " + svc.URL())
+			if provider, base, _ := service.CodexState(svc.CodexConfig()); provider == service.CodexProvider {
+				fmt.Println("Codex passe par " + base)
+			}
 		}
 	case "uninstall":
 		err = svc.Uninstall()
 		if err == nil {
-			fmt.Println("désinstallé, Claude Code parle de nouveau directement à Anthropic")
+			fmt.Println("désinstallé, Claude Code et Codex parlent de nouveau directement à leur fournisseur")
 		}
 	case "status":
 		running, state := svc.Running()
@@ -118,9 +121,24 @@ func runAudit(svc service.Service, args []string) int {
 			return audit.ParseLsof(out), err
 		},
 		AnthropicIPs: func() ([]string, error) { return net.LookupHost("api.anthropic.com") },
-		GatewayPID:   strings.TrimSpace(pidOut),
-		StatusLog:    svc.StatusLog(),
-		Now:          time.Now(),
+		OpenAIIPs: func() ([]string, error) {
+			var all []string
+			for _, host := range []string{"api.openai.com", "chatgpt.com"} {
+				ips, err := net.LookupHost(host)
+				if err != nil {
+					return nil, err
+				}
+				all = append(all, ips...)
+			}
+			return all, nil
+		},
+		Codex: func() (bool, string) {
+			provider, _, _ := service.CodexState(svc.CodexConfig())
+			return svc.CodexUsed(), provider
+		},
+		GatewayPID: strings.TrimSpace(pidOut),
+		StatusLog:  svc.StatusLog(),
+		Now:        time.Now(),
 	})
 	failed := 0
 	for _, f := range findings {

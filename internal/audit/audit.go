@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -29,6 +31,8 @@ type Env struct {
 	Healthy      func() bool
 	Connections  func() ([]Conn, error)
 	AnthropicIPs func() ([]string, error)
+	OpenAIIPs    func() ([]string, error)
+	Codex        func() (used bool, provider string)
 	GatewayPID   string
 	StatusLog    string
 	Now          time.Time
@@ -57,35 +61,73 @@ func Run(e Env) []Finding {
 		add("shell", false, "ANTHROPIC_BASE_URL vaut %q dans l'environnement du shell, qui passe avant les réglages", e.ProcessURL)
 	}
 
-	ips, err := e.AnthropicIPs()
-	conns, err2 := e.Connections()
-	if err != nil || err2 != nil {
-		add("bypass", false, "connexions non vérifiées : %v %v", err, err2)
+	if used, provider := e.Codex(); used {
+		add("codex", provider == "privacy-gateway", "model_provider de ~/.codex/config.toml : %q, \"privacy-gateway\" attendu", provider)
+	}
+
+	anthropic, err := e.AnthropicIPs()
+	openai, err2 := e.OpenAIIPs()
+	conns, err3 := e.Connections()
+	if err != nil || err2 != nil || err3 != nil {
+		add("bypass", false, "connexions non vérifiées : %v %v %v", err, err2, err3)
 	} else {
-		direct := map[string]bool{}
-		known := map[string]bool{}
-		for _, ip := range ips {
-			known[ip] = true
-		}
+		toAnthropic := set(anthropic)
+		toOpenAI := set(openai)
+		direct, browsers := map[string]bool{}, map[string]bool{}
 		for _, c := range conns {
-			if known[c.Remote] && c.PID != e.GatewayPID {
-				direct[fmt.Sprintf("%s (pid %s)", c.Command, c.PID)] = true
+			if c.PID == e.GatewayPID {
+				continue
 			}
+			codex := strings.Contains(strings.ToLower(c.Command), "codex")
+			if !toAnthropic[c.Remote] && !(codex && toOpenAI[c.Remote]) {
+				continue
+			}
+			if browser.MatchString(c.Command) {
+				browsers[c.Command] = true
+				continue
+			}
+			label := c.Command
+			if version.MatchString(label) {
+				label = "Claude Code " + label
+			}
+			direct[fmt.Sprintf("%s (pid %s)", label, c.PID)] = true
+		}
+		outside := ""
+		if len(browsers) > 0 {
+			outside = ", navigateur hors périmètre : " + strings.Join(sorted(browsers), ", ")
 		}
 		if len(direct) == 0 {
-			add("bypass", true, "aucun autre processus connecté à api.anthropic.com")
+			add("bypass", true, "aucun agent ne parle à Anthropic ou à OpenAI sans la passerelle%s", outside)
 		} else {
-			var names []string
-			for n := range direct {
-				names = append(names, n)
-			}
-			add("bypass", false, "connecté à api.anthropic.com sans passer par la passerelle : %s", strings.Join(names, ", "))
+			add("bypass", false, "en direct, sans la passerelle : %s ; une session ouverte avant l'installation se relance%s", strings.Join(sorted(direct), ", "), outside)
 		}
 	}
 
 	total, failed := errorRate(e.StatusLog, e.Now.Add(-24*time.Hour))
 	ok := total < 20 || failed*100 <= total
-	add("errors", ok, "%d erreurs 400 ou 5xx sur %d requêtes de messages en 24 h", failed, total)
+	add("errors", ok, "%d erreurs 400 ou 5xx sur %d requêtes de messages ou de réponses en 24 h", failed, total)
+	return out
+}
+
+var (
+	browser = regexp.MustCompile(`(?i)chrome|safari|firefox|arc|brave|edge|opera|vivaldi|webkit|orion`)
+	version = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+)
+
+func set(values []string) map[string]bool {
+	out := map[string]bool{}
+	for _, v := range values {
+		out[v] = true
+	}
+	return out
+}
+
+func sorted(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -102,7 +144,7 @@ func errorRate(path string, since time.Time) (total, failed int) {
 			Path   string `json:"path"`
 			Status int    `json:"status"`
 		}
-		if json.Unmarshal(scanner.Bytes(), &e) != nil || e.Path != "/v1/messages" {
+		if json.Unmarshal(scanner.Bytes(), &e) != nil || (e.Path != "/v1/messages" && !strings.HasSuffix(e.Path, "/responses")) {
 			continue
 		}
 		if t, err := time.Parse(time.RFC3339, e.Time); err != nil || t.Before(since) {

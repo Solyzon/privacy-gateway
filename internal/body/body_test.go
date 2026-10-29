@@ -106,3 +106,18 @@ func TestSessionID(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestAddSystemNote(t *testing.T) {
+	cases := map[string]string{
+		`{"model":"m","messages":[]}`:                            `{"model":"m","messages":[],"system":[{"type":"text","text":"N"}]}`,
+		`{"system":"S","messages":[]}`:                           `{"system":"S\n\nN","messages":[]}`,
+		`{"system":[{"type":"text","text":"S"}] ,"messages":[]}`: `{"system":[{"type":"text","text":"S"},{"type":"text","text":"N"}] ,"messages":[]}`,
+		`{"system":[],"messages":[]}`:                            `{"system":[{"type":"text","text":"N"}],"messages":[]}`,
+	}
+	for in, want := range cases {
+		got, err := AddSystemNote([]byte(in), "N")
+		if err != nil || string(got) != want || !json.Valid(got) {
+			t.Errorf("%s\ngot  %s\nwant %s %v", in, got, want, err)
+		}
+	}
+}

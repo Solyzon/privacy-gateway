@@ -41,6 +41,11 @@ func (s Service) Binary() string      { return filepath.Join(s.Home, "bin", "pri
 func (s Service) Settings() string    { return filepath.Join(s.UserHome, ".claude", "settings.json") }
 func (s Service) StatusLog() string   { return filepath.Join(s.Home, "status.log") }
 func (s Service) SessionsDir() string { return filepath.Join(s.Home, "sessions") }
+func (s Service) CodexConfig() string { return filepath.Join(s.UserHome, ".codex", "config.toml") }
+func (s Service) CodexUsed() bool {
+	_, err := os.Stat(filepath.Join(s.UserHome, ".codex"))
+	return err == nil
+}
 func (s Service) plistPath() string {
 	return filepath.Join(s.UserHome, "Library", "LaunchAgents", Label+".plist")
 }
@@ -183,12 +188,23 @@ func (s Service) Install() error {
 	if !waitHealthy(s.URL()) {
 		return errors.New("the gateway does not answer on " + s.URL() + ", Claude Code settings left unchanged")
 	}
-	return SetBaseURL(s.Settings(), s.URL())
+	if err := SetBaseURL(s.Settings(), s.URL()); err != nil {
+		return err
+	}
+	if s.CodexUsed() {
+		if err := SetCodex(s.CodexConfig(), CodexBaseURL(s.URL(), filepath.Join(s.UserHome, ".codex", "auth.json"))); err != nil {
+			return fmt.Errorf("Claude Code branché, Codex non : %w", err)
+		}
+	}
+	return nil
 }
 
 func (s Service) Uninstall() error {
 	if err := UnsetBaseURL(s.Settings(), s.URL()); err != nil {
 		return fmt.Errorf("settings: %w", err)
+	}
+	if err := UnsetCodex(s.CodexConfig()); err != nil {
+		return fmt.Errorf("codex: %w", err)
 	}
 	switch s.OS {
 	case "darwin":

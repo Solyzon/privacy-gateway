@@ -238,3 +238,12 @@ func TestTemplatedValuesStayReadable(t *testing.T) {
 		t.Fatalf("templating masked: %s", out)
 	}
 }
+
+func TestRemaskEscapedValue(t *testing.T) {
+	table := testMasker().NewTable()
+	table.add(Secret, `quo"te\back-value`, "")
+	out := table.Mask(`{"cmd":"echo quo\"te\\back-value"}`)
+	if strings.Contains(out, "back-value") {
+		t.Fatalf("escaped value left in clear: %s", out)
+	}
+}

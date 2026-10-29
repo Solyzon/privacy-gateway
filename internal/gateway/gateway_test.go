@@ -112,6 +112,9 @@ func TestStreamIsMaskedAndUnmasked(t *testing.T) {
 	if text.String() != "voici "+secret+" fin" {
 		t.Fatalf("got %q", text.String())
 	}
+	if !strings.Contains(up.bodies[0], `"system":[{"type":"text","text":"Values shaped like SZ_`) {
+		t.Fatalf("placeholder note missing: %s", up.bodies[0])
+	}
 	h := up.headers[0]
 	if h.Get("anthropic-beta") != "interleaved-thinking-2025-05-14" || h.Get("Authorization") != "Bearer sk-ant-oat01-test" || h.Get("Accept-Encoding") != "identity" {
 		t.Fatalf("headers not relayed: %v", h)
@@ -199,5 +202,57 @@ func TestSessionNotice(t *testing.T) {
 	post(t, srv.URL, "/v1/messages", requestBody(true))
 	if _, err := os.Stat(path); err == nil {
 		t.Fatal("values already announced in this session were announced again")
+	}
+}
+
+func TestCodexRouteIsMaskedAndUnmasked(t *testing.T) {
+	up := &upstream{}
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		up.mu.Lock()
+		up.bodies = append(up.bodies, r.URL.Path+" "+string(b))
+		up.mu.Unlock()
+		token := tokenRe.FindString(string(b))
+		w.Header()["Content-Type"] = nil
+		for _, part := range []string{"cmd " + token[:7], token[7:]} {
+			d, _ := json.Marshal(map[string]any{"type": "response.output_text.delta", "item_id": "msg_1", "output_index": 0, "content_index": 0, "delta": part})
+			io.WriteString(w, "event: response.output_text.delta\ndata: "+string(d)+"\n\n")
+		}
+		d, _ := json.Marshal(map[string]any{"type": "response.output_item.done", "item": map[string]any{"type": "custom_tool_call", "id": "ctc_1", "name": "exec", "call_id": "c1", "input": "run(\"" + token + "\")"}})
+		io.WriteString(w, "event: response.output_item.done\ndata: "+string(d)+"\n\n")
+	}))
+	defer fake.Close()
+	g, _ := New(Config{Upstream: "http://127.0.0.1:1", ChatGPT: fake.URL + "/backend-api/codex", Home: t.TempDir(), Version: "test"})
+	srv := httptest.NewServer(g)
+	defer srv.Close()
+	payload := `{"model":"gpt","stream":true,"prompt_cache_key":"k","input":[{"type":"reasoning","id":"rs_1","encrypted_content":"gAAA"},{"type":"custom_tool_call_output","call_id":"c0","output":[{"type":"input_text","text":"DB_PASSWORD=` + secret + `"}]}]}`
+	req, _ := http.NewRequest("POST", srv.URL+"/codex/responses", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.HasPrefix(up.bodies[0], "/backend-api/codex/responses ") || strings.Contains(up.bodies[0], secret) || !strings.Contains(up.bodies[0], `"encrypted_content":"gAAA"`) {
+		t.Fatalf("upstream got %s", up.bodies[0])
+	}
+	if !strings.Contains(string(out), `"delta":"`+secret[:2]) || !strings.Contains(string(out), `run(\"`+secret+`\")`) {
+		t.Fatalf("answer not unmasked: %s", out)
+	}
+}
+
+func TestCompressedBodyIsRefused(t *testing.T) {
+	srv, up, _ := start(t)
+	req, _ := http.NewRequest("POST", srv.URL+"/codex/responses", strings.NewReader("\x28\xb5\x2f\xfd"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "zstd")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnsupportedMediaType || len(up.bodies) != 0 {
+		t.Fatalf("compressed body forwarded: %d", resp.StatusCode)
 	}
 }

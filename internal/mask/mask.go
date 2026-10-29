@@ -121,27 +121,41 @@ func (t *Table) Learn(text string) {
 	}
 }
 
+func jsonEscaped(v string) string {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.Encode(v)
+	s := strings.TrimSuffix(b.String(), "\n")
+	return s[1 : len(s)-1]
+}
+
 func (t *Table) known() *strings.Replacer {
 	if t.replacer != nil {
 		return t.replacer
 	}
-	values := make([]string, 0, len(t.forward))
-	for v := range t.forward {
-		if len(v) >= remaskMinLength {
-			values = append(values, v)
+	type pair struct{ old, token string }
+	var pairs []pair
+	for v, tok := range t.forward {
+		if len(v) < remaskMinLength {
+			continue
+		}
+		pairs = append(pairs, pair{v, tok})
+		if esc := jsonEscaped(v); esc != v {
+			pairs = append(pairs, pair{esc, tok})
 		}
 	}
-	sort.Slice(values, func(a, b int) bool {
-		if len(values[a]) != len(values[b]) {
-			return len(values[a]) > len(values[b])
+	sort.Slice(pairs, func(a, b int) bool {
+		if len(pairs[a].old) != len(pairs[b].old) {
+			return len(pairs[a].old) > len(pairs[b].old)
 		}
-		return values[a] < values[b]
+		return pairs[a].old < pairs[b].old
 	})
-	pairs := make([]string, 0, 2*len(values))
-	for _, v := range values {
-		pairs = append(pairs, v, t.forward[v])
+	args := make([]string, 0, 2*len(pairs))
+	for _, p := range pairs {
+		args = append(args, p.old, p.token)
 	}
-	t.replacer = strings.NewReplacer(pairs...)
+	t.replacer = strings.NewReplacer(args...)
 	return t.replacer
 }
 
@@ -176,14 +190,7 @@ func (t *Table) Unmask(text string) string {
 }
 
 func (t *Table) UnmaskJSON(text string) string {
-	return t.unmask(text, func(v string) string {
-		var b strings.Builder
-		enc := json.NewEncoder(&b)
-		enc.SetEscapeHTML(false)
-		enc.Encode(v)
-		s := strings.TrimSuffix(b.String(), "\n")
-		return s[1 : len(s)-1]
-	})
+	return t.unmask(text, jsonEscaped)
 }
 
 func (t *Table) Entries() []Entry {

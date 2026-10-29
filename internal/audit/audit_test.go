@@ -23,6 +23,8 @@ func healthy(t *testing.T) Env {
 			return []Conn{{PID: "10", Command: "privacy-gateway", Remote: "160.79.104.10"}}, nil
 		},
 		AnthropicIPs: func() ([]string, error) { return []string{"160.79.104.10"}, nil },
+		OpenAIIPs:    func() ([]string, error) { return []string{"104.18.33.45"}, nil },
+		Codex:        func() (bool, string) { return true, "privacy-gateway" },
 		GatewayPID:   "10",
 		StatusLog:    filepath.Join(t.TempDir(), "status.log"),
 		Now:          now,
@@ -50,6 +52,7 @@ func TestEachHoleIsReported(t *testing.T) {
 		"service":  func(e *Env) { e.Running = func() (bool, string) { return false, "agent launchd absent" } },
 		"healthz":  func(e *Env) { e.Healthy = func() bool { return false } },
 		"settings": func(e *Env) { e.SettingsURL = func() (string, error) { return "", nil } },
+		"codex":    func(e *Env) { e.Codex = func() (bool, string) { return true, "" } },
 		"shell":    func(e *Env) { e.ProcessURL = "https://api.anthropic.com" },
 		"bypass": func(e *Env) {
 			e.Connections = func() ([]Conn, error) {
@@ -94,5 +97,26 @@ func TestParseLsof(t *testing.T) {
 	conns := ParseLsof(out)
 	if len(conns) != 2 || conns[0] != (Conn{"10", "privacy-gateway", "160.79.104.10"}) || conns[1] != (Conn{"22", "node", "2607:6bc0::10"}) {
 		t.Fatalf("got %+v", conns)
+	}
+}
+
+func TestBypassLabelsAndScope(t *testing.T) {
+	e := healthy(t)
+	e.Connections = func() ([]Conn, error) {
+		return []Conn{
+			{PID: "13261", Command: "Google Chrome Helper (Aperitif)", Remote: "160.79.104.10"},
+			{PID: "50", Command: "Slack", Remote: "104.18.33.45"},
+		}, nil
+	}
+	if f := failing(Run(e)); len(f) != 0 {
+		t.Fatalf("browser or unrelated app reported: %v", f)
+	}
+	e.Connections = func() ([]Conn, error) {
+		return []Conn{{PID: "85370", Command: "2.1.312", Remote: "160.79.104.10"}, {PID: "60", Command: "codex", Remote: "104.18.33.45"}}, nil
+	}
+	for _, f := range Run(e) {
+		if f.Check == "bypass" && (f.OK || !strings.Contains(f.Detail, "Claude Code 2.1.312 (pid 85370)") || !strings.Contains(f.Detail, "codex (pid 60)")) {
+			t.Fatalf("got %+v", f)
+		}
 	}
 }
