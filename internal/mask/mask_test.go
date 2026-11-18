@@ -12,12 +12,12 @@ import (
 
 var secrets = map[string]string{
 	"ANTHROPIC_API_KEY":     "sk-ant-api03-Zq8vT3kLmN2pR7sX9wY4bC6dF1gH5jK0aE3iO8uQ2tV7",
-	"GITLAB_TOKEN":          "glpat-EXAMPLE",
+	"GITLAB_TOKEN":          "glpat-" + "Tq3vX9mLp2Rw7Kz4Nb8E",
 	"AWS_ACCESS_KEY_ID":     "AKIAZ7QX3M9P2LK4RT8W",
 	"DB_PASSWORD":           "Tr0ub4dor&3-horse",
 	"SESSION_SECRET":        "f3a9c1e7b2d84a6f9e0c5b7a1d3e8f2c",
 	"DATABASE_URL_PASSWORD": "pgS3cretValue77",
-	"STRIPE_SECRET_KEY":     "sk_live_EXAMPLE",
+	"STRIPE_SECRET_KEY":     "sk_live_" + "51HtQwErTy9UiOpAsDfGhJkLzXc",
 }
 
 var env = `APP_ENV=production

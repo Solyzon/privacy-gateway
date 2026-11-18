@@ -23,9 +23,11 @@ import (
 	"github.com/Solyzon/privacy-gateway/internal/gateway"
 )
 
-var secrets = []string{"Tr0ub4dor&3-horse", "glpat-EXAMPLE", "camille.durand@orange.fr"}
+const gitlabToken = "glpat-" + "Tq3vX9mLp2Rw7Kz4Nb8E"
 
-const env = "APP_ENV=production\nDB_PASSWORD=Tr0ub4dor&3-horse\nGITLAB_TOKEN=glpat-EXAMPLE\nSUPPORT_CONTACT=camille.durand@orange.fr\n"
+var secrets = []string{"Tr0ub4dor&3-horse", gitlabToken, "camille.durand@orange.fr"}
+
+const env = "APP_ENV=production\nDB_PASSWORD=Tr0ub4dor&3-horse\nGITLAB_TOKEN=" + gitlabToken + "\nSUPPORT_CONTACT=camille.durand@orange.fr\n"
 
 type recorder struct {
 	mu        sync.Mutex
