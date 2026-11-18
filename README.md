@@ -41,7 +41,15 @@ key order and escapes, so the provider's prompt cache keeps hitting.
 
 ## Install
 
-Go 1.26 or later, on macOS or Linux.
+From the latest release, on macOS or Linux, Intel or ARM:
+
+```bash
+os=$(uname -s | tr A-Z a-z); arch=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+curl -fsSLo privacy-gateway "https://github.com/Solyzon/privacy-gateway/releases/latest/download/privacy-gateway-$os-$arch"
+chmod +x privacy-gateway && ./privacy-gateway install
+```
+
+Each release lists the `SHA256SUMS` of its binaries. From source, with Go 1.26 or later:
 
 ```bash
 git clone https://github.com/Solyzon/privacy-gateway.git
@@ -49,7 +57,7 @@ cd privacy-gateway
 make install
 ```
 
-`make install` builds the binary and runs `privacy-gateway install`, which:
+`make install` builds the binary and runs `privacy-gateway install`. Either way, `install`:
 
 - copies the binary to `~/.solyzon/privacy-gateway/bin/`;
 - registers a `launchd` agent on macOS or a `systemd --user` unit on Linux;
@@ -85,6 +93,10 @@ make verify    # gofmt, go vet, go test
 make dev       # test gateway on 127.0.0.1:8788, without touching your settings
 make live      # real run with Claude Code behind a recorder, uses a little Anthropic quota
 ```
+
+## Contributing
+
+Issues and pull requests are welcome, see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## Authors
 
