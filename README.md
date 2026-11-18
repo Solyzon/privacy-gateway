@@ -1,85 +1,97 @@
 <div align="center">
   <h1>privacy-gateway</h1>
 
-  <p>La passerelle locale qui masque les secrets et les données personnelles avant qu'ils partent chez Anthropic, pour l'équipe Solyzon.</p>
+  <p>A local proxy that hides your secrets and personal data from the model before Claude Code or Codex sends them, and puts them back in the answer.</p>
 
   <p>
     <img alt="Go" src="https://img.shields.io/badge/Go-1.26-00ADD8?style=flat-square&logo=go&logoColor=white">
-    <img alt="License" src="https://img.shields.io/badge/license-proprietary-red?style=flat-square">
+    <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square">
   </p>
 </div>
 
-## Stack
+## Why
 
-Un binaire Go sans dépendance externe, posé en `ANTHROPIC_BASE_URL` de Claude Code sur
-`127.0.0.1:8787` et relancé par `launchd` sur macOS ou `systemd --user` sur Linux. Les repères
-`SZ_<KIND>_<12 hex>` sont un HMAC de la valeur avec une clé propre à la machine, donc rien n'est
-écrit sur disque et le même historique donne les mêmes octets d'un tour à l'autre, ce qui garde
-le cache de prompts d'Anthropic.
+A coding agent reads your `.env`, your database dumps and your logs, and all of it goes to the
+model provider. privacy-gateway sits on `127.0.0.1:8787` between the agent and the API. Every
+secret or personal value in the request becomes a stable placeholder, and the streamed answer
+gets the real value back, including inside the commands the agent runs.
 
-## Fonctionnalités
-
-- Masque les secrets (clés d'API, jetons, mots de passe de `.env`, YAML et JSON, clés privées), les noms et adresses postales des personnes, les e-mails, téléphones, IBAN, numéros de sécurité sociale et cartes bancaires.
-- Remet les vraies valeurs dans la réponse en flux et dans les commandes que Claude lance.
-- Affiche dans la statusline, pendant deux secondes et par session, ce qui vient d'être masqué.
-- Audite le poste et sort en erreur au moindre trou : service arrêté, réglage absent, canari qui fuit, programme qui parle à Anthropic sans passer par la passerelle, erreurs en série.
-
-## Lancement (dev)
-
-Go 1.26 et pnpm, installés par `mise install`.
-
-```bash
-make verify
-make dev
+```text
+what you have     | 42 | Mme Claire Dubois | +33 6 12 34 56 78 |
+what the model    | 42 | Mme SZ_NAME_8b21e0c4d7f3 | SZ_PHONE_5c90a3e1b6d2 |
+what you read     | 42 | Mme Claire Dubois | +33 6 12 34 56 78 |
 ```
 
-`make dev` lance une passerelle de test sur `127.0.0.1:8788`, sans toucher au réglage de
-Claude Code.
+## What it masks
 
-Commandes courantes :
+| Kind      | Examples                                                                                                                                                                                                                 |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `SECRET`  | Anthropic, OpenAI, Stripe, GitLab, GitHub, AWS and Slack keys, JWTs, PEM private keys, URL passwords, values of `*_PASSWORD`, `*_TOKEN`, `*_SECRET`, `*_API_KEY` variables, `password` and `token` keys in YAML and JSON |
+| `NAME`    | people's names in `psql` and `mysql` output, CSV, SQL, JSON and YAML fields, and after a title (`Mr`, `Dr`)                                                                                                              |
+| `ADDRESS` | postal addresses in address fields, and a number followed by a street type in text                                                                                                                                       |
+| `EMAIL`   | every address except technical mailboxes (`root`, `git`, `postgres`) and example domains                                                                                                                                 |
+| `PHONE`   | French numbers and international numbers starting with `+`                                                                                                                                                               |
+| `IBAN`    | every country, mod 97 checked                                                                                                                                                                                            |
+| `CARD`    | Luhn checked                                                                                                                                                                                                             |
+| `NIR`     | French social security numbers, key checked                                                                                                                                                                              |
+
+A placeholder is an HMAC-SHA256 of the value with a 32-byte key that never leaves the machine,
+so the same value always gives the same placeholder. The JSON body is rewritten in place, keeping
+key order and escapes, so the provider's prompt cache keeps hitting.
+
+## Install
+
+Go 1.26 or later, on macOS or Linux.
 
 ```bash
-make verify    # format, analyse et tests
-make live      # test réel avec Claude Code derrière un enregistreur
-make install   # installe la passerelle sur ce poste et y branche Claude Code
+git clone https://github.com/Solyzon/privacy-gateway.git
+cd privacy-gateway
+make install
 ```
 
-Couper en urgence : `~/.solyzon/privacy-gateway/bin/privacy-gateway uninstall`.
+`make install` builds the binary and runs `privacy-gateway install`, which:
 
-## Documentation
+- copies the binary to `~/.solyzon/privacy-gateway/bin/`;
+- registers a `launchd` agent on macOS or a `systemd --user` unit on Linux;
+- waits for `/healthz`;
+- only then sets `ANTHROPIC_BASE_URL=http://127.0.0.1:8787` in `~/.claude/settings.json`, and
+  points `model_provider` of `~/.codex/config.toml` at the gateway when Codex is installed.
 
-| Fichier                                                                                                          | Contenu                                                    |
-| ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| [`CLAUDE.md`](./CLAUDE.md)                                                                                       | Règles projet et invariants                                |
-| [`docs/privacy-gateway.md`](./docs/privacy-gateway.md)                                                           | Ce qui est masqué, installation, audit, pannes, statusline |
-| [`docs/superpowers/plans/2026-10-29-privacy-gateway.md`](./docs/superpowers/plans/2026-10-29-privacy-gateway.md) | Lots faits et à faire                                      |
+Restart your open Claude Code sessions so they pick up the new setting.
 
-## Branches et publication
+## Check and remove
 
-| Branche | Rôle                                 |
-| ------- | ------------------------------------ |
-| `dev`   | Branche de travail, celle par défaut |
+```bash
+privacy-gateway status    # one-line summary
+privacy-gateway audit     # exits 1 on any gap: service down, setting missing, canary leaking, agent talking to the API directly
+privacy-gateway uninstall # removes the setting first, then the service
+```
 
-Le binaire se publie par étiquette `vX.Y.Z`. Il n'y a ni déploiement ni aperçu.
+If the binary is gone, remove `ANTHROPIC_BASE_URL` from `env` in `~/.claude/settings.json`.
 
-## Auteurs
+## Limits
 
-Conçu et développé par **[Armand OCTEAU](https://github.com/Pomme978)** et
-**[Sarah LÉVY](https://github.com/Saaaraaah14)** au sein de [Solyzon](https://solyzon.com),
-à partir d'octobre 2026.
+- Images and PDFs are sent as they are. The status line says so for each new attachment.
+- A name in a sentence without a title or a field, an address without a number, and short
+  passwords outside a known form stay readable.
+- The model only sees the placeholder, so it cannot judge a value, for example a password's
+  strength.
+- When the gateway is down, the agent fails to connect. Nothing goes out in clear.
 
-## Licence
+## Development
 
-Travail propriétaire. **Copyright (c) 2026 Solyzon. Tous droits réservés.**
+```bash
+make verify    # gofmt, go vet, go test
+make dev       # test gateway on 127.0.0.1:8788, without touching your settings
+make live      # real run with Claude Code behind a recorder, uses a little Anthropic quota
+```
 
-Outil interne de Solyzon, réservé à son équipe. Toute reproduction, redistribution,
-modification ou utilisation par un tiers est interdite sans autorisation écrite préalable.
+## Authors
 
-<div align="center">
-  <br>
-  <a href="https://solyzon.com">
-    <img src="./docs/assets/solyzon.svg" alt="Solyzon" height="48">
-  </a>
-  <p><sub>Conception et développement par Solyzon.</sub></p>
-  <p><sub>© 2026 Solyzon. Tous droits réservés.</sub></p>
-</div>
+Designed and built by **[Armand OCTEAU](https://github.com/Pomme978)** and
+**[Sarah LÉVY](https://github.com/Saaaraaah14)** at [Solyzon](https://solyzon.com), since
+October 2026.
+
+## License
+
+Copyright 2026 Solyzon. Licensed under the [Apache License, Version 2.0](./LICENSE).

@@ -71,12 +71,14 @@ func start(t *testing.T) (*httptest.Server, *upstream, string) {
 	return srv, up, home
 }
 
+const gitlabToken = "glpat-" + "Tq3vX9mLp2Rw7Kz4Nb8E"
+
 func requestBody(stream bool) string {
 	s := "false"
 	if stream {
 		s = "true"
 	}
-	return `{"model":"m","stream":` + s + `,"metadata":{"user_id":"user_a_account_b_session_s1"},"messages":[{"role":"user","content":"DB_PASSWORD=` + secret + `\nGITLAB_TOKEN=glpat-EXAMPLE\ncamille@orange.fr"}]}`
+	return `{"model":"m","stream":` + s + `,"metadata":{"user_id":"user_a_account_b_session_s1"},"messages":[{"role":"user","content":"DB_PASSWORD=` + secret + `\nGITLAB_TOKEN=` + gitlabToken + `\ncamille@orange.fr"}]}`
 }
 
 func post(t *testing.T, url, path, payload string) (*http.Response, string) {
