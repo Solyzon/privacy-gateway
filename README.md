@@ -17,9 +17,9 @@ secret or personal value in the request becomes a stable placeholder, and the st
 gets the real value back, including inside the commands the agent runs.
 
 ```text
-what you have     DB_PASSWORD=hunter2-but-longer
-what the model    DB_PASSWORD=<placeholder>
-what you read     DB_PASSWORD=hunter2-but-longer
+what you have     | 42 | Mme Claire Dubois | +33 6 12 34 56 78 |
+what the model    | 42 | Mme SZ_NAME_8b21e0c4d7f3 | SZ_PHONE_5c90a3e1b6d2 |
+what you read     | 42 | Mme Claire Dubois | +33 6 12 34 56 78 |
 ```
 
 ## What it masks
