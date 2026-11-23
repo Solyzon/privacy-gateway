@@ -18,7 +18,7 @@ gets the real value back, including inside the commands the agent runs.
 
 ```text
 what you have     | 42 | Mme Claire Dubois | +33 6 12 34 56 78 |
-what the model    | 42 | Mme SZ_NAME_8b21e0c4d7f3 | SZ_PHONE_5c90a3e1b6d2 |
+what the model    | 42 | Mme Claire Dubois | SZ_PHONE_5c90a3e1b6d2 |
 what you read     | 42 | Mme Claire Dubois | +33 6 12 34 56 78 |
 ```
 
@@ -27,13 +27,14 @@ what you read     | 42 | Mme Claire Dubois | +33 6 12 34 56 78 |
 | Kind      | Examples                                                                                                                                                                                                                 |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `SECRET`  | Anthropic, OpenAI, Stripe, GitLab, GitHub, AWS and Slack keys, JWTs, PEM private keys, URL passwords, values of `*_PASSWORD`, `*_TOKEN`, `*_SECRET`, `*_API_KEY` variables, `password` and `token` keys in YAML and JSON |
-| `NAME`    | people's names in `psql` and `mysql` output, CSV, SQL, JSON and YAML fields, and after a title (`Mr`, `Dr`)                                                                                                              |
 | `ADDRESS` | postal addresses in address fields, and a number followed by a street type in text                                                                                                                                       |
 | `EMAIL`   | every address except technical mailboxes (`root`, `git`, `postgres`) and example domains                                                                                                                                 |
 | `PHONE`   | French numbers and international numbers starting with `+`                                                                                                                                                               |
 | `IBAN`    | every country, mod 97 checked                                                                                                                                                                                            |
 | `CARD`    | Luhn checked                                                                                                                                                                                                             |
 | `NIR`     | French social security numbers, key checked                                                                                                                                                                              |
+
+People's names are not masked. Everything above is.
 
 A placeholder is an HMAC-SHA256 of the value with a 32-byte key that never leaves the machine,
 so the same value always gives the same placeholder. The JSON body is rewritten in place, keeping
@@ -80,8 +81,7 @@ If the binary is gone, remove `ANTHROPIC_BASE_URL` from `env` in `~/.claude/sett
 ## Limits
 
 - Images and PDFs are sent as they are. The status line says so for each new attachment.
-- A name in a sentence without a title or a field, an address without a number, and short
-  passwords outside a known form stay readable.
+- Names, an address without a number, and short passwords outside a known form stay readable.
 - The model only sees the placeholder, so it cannot judge a value, for example a password's
   strength.
 - When the gateway is down, the agent fails to connect. Nothing goes out in clear.

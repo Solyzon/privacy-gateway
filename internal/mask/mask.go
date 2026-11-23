@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -69,6 +70,7 @@ func (m *Masker) find(text string) []Finding {
 		}
 	}
 	spans = append(spans, personalFindings(text)...)
+	spans = slices.DeleteFunc(spans, func(f Finding) bool { return f.Kind == Name })
 	sort.SliceStable(spans, func(a, b int) bool {
 		if spans[a].Start != spans[b].Start {
 			return spans[a].Start < spans[b].Start
